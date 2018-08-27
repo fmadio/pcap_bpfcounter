@@ -1,0 +1,43 @@
+./lj_vm.s:	.globl lj_ff_string_len
+./lj_vm.s:	.hidden lj_ff_string_len
+./lj_vm.s:	.type lj_ff_string_len, @function
+./lj_vm.s:	.size lj_ff_string_len, 29
+./lj_vm.s:lj_ff_string_len:
+./lj_vm.s:	.globl lj_ff_string_byte
+./lj_vm.s:	.hidden lj_ff_string_byte
+./lj_vm.s:	.type lj_ff_string_byte, @function
+./lj_vm.s:	.size lj_ff_string_byte, 51
+./lj_vm.s:lj_ff_string_byte:
+./lj_vm.s:	.globl lj_ff_string_char
+./lj_vm.s:	.hidden lj_ff_string_char
+./lj_vm.s:	.type lj_ff_string_char, @function
+./lj_vm.s:	.size lj_ff_string_char, 70
+./lj_vm.s:lj_ff_string_char:
+./lj_vm.s:	.globl lj_ff_string_sub
+./lj_vm.s:	.hidden lj_ff_string_sub
+./lj_vm.s:	.type lj_ff_string_sub, @function
+./lj_vm.s:	.size lj_ff_string_sub, 161
+./lj_vm.s:lj_ff_string_sub:
+./lj_vm.s:	.globl lj_ff_string_rep
+./lj_vm.s:	.hidden lj_ff_string_rep
+./lj_vm.s:	.type lj_ff_string_rep, @function
+./lj_vm.s:	.size lj_ff_string_rep, 125
+./lj_vm.s:lj_ff_string_rep:
+./lj_vm.s:	.globl lj_ff_string_reverse
+./lj_vm.s:	.hidden lj_ff_string_reverse
+./lj_vm.s:	.type lj_ff_string_reverse, @function
+./lj_vm.s:	.size lj_ff_string_reverse, 106
+./lj_vm.s:lj_ff_string_reverse:
+./lj_vm.s:	.globl lj_ff_string_lower
+./lj_vm.s:	.hidden lj_ff_string_lower
+./lj_vm.s:	.type lj_ff_string_lower, @function
+./lj_vm.s:	.size lj_ff_string_lower, 111
+./lj_vm.s:lj_ff_string_lower:
+./lj_vm.s:	.globl lj_ff_string_upper
+./lj_vm.s:	.hidden lj_ff_string_upper
+./lj_vm.s:	.type lj_ff_string_upper, @function
+./lj_vm.s:	.size lj_ff_string_upper, 111
+./lj_vm.s:lj_ff_string_upper:
+Binary file ./libluajit.a matches
+Binary file ./lj_vm.o matches
+Binary file ./lj_vm_dyn.o matches
