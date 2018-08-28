@@ -481,7 +481,7 @@ static inline void  ns2str(u8* Str, u64 TS)
 	int usec = (sec - msec*1000000ULL)/ 1000ULL; 
 	int nsec = (sec - msec*1000000ULL- usec*1000ULL);
 
-	sprintf(Str, "%04i%02i%02i_%02i%02i%02i.%03i.%03i.%03i", c.year, c.month, c.day, c.hour, c.min, c.sec, msec, usec, nsec);
+	sprintf(Str, "%04i-%02i-%02i_%02i:%02i:%02i.%03i.%03i.%03i", c.year, c.month, c.day, c.hour % 24, c.min, c.sec, msec, usec, nsec);
 }
 
 

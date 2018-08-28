@@ -9,13 +9,13 @@ CreatePipeline(
 	["Name"] 			= "everything",
 	["BPF"]  			= "",
 	["RE"]   			= "",
-	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["Output"] 			= "/mnt/remote0/cap0.stats",
 })
 
 CreatePipeline(
 {
 	["Name"] 			= "everything-tcp",
-	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "tcp",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		
@@ -24,7 +24,7 @@ CreatePipeline(
 CreatePipeline(
 {
 	["Name"] 			= "everything-udp",
-	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "udp",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		
@@ -33,7 +33,7 @@ CreatePipeline(
 CreatePipeline(
 {
 	["Name"] 			= "base4",
-	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "host 192.168.2.136",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		
