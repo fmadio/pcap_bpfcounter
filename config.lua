@@ -1,6 +1,9 @@
 print("config file")
-print(CreatePipeline)
 
+-- how often to generate output log entries
+SetUpdateRate(60e9)
+
+-- create pipelines
 CreatePipeline(
 {
 	["Name"] 			= "everything",
@@ -12,42 +15,27 @@ CreatePipeline(
 CreatePipeline(
 {
 	["Name"] 			= "everything-tcp",
-	["OutDir"] 			= "/mnt/remote0/cap0.stats/",
+	["Output"] 			= "/mnt/remote0/cap0.stats/",
 	["BPF"]  			= "tcp",
 	["RE"]   			= "",
+	["BurstTime"]		= 100e3,		
 })
 
 CreatePipeline(
 {
-	["Name"] 			= "vlan1-core-network",
-	["OutDir"] 			= "/mnt/remote0/cap0.stats/",
-	["BPF"]  			= "vlan 1",
+	["Name"] 			= "everything-udp",
+	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["BPF"]  			= "udp",
 	["RE"]   			= "",
+	["BurstTime"]		= 100e3,		
 })
 
 CreatePipeline(
 {
-	["Name"] 			= "gw0-core-network",
-	["BPF"]  			= "host 192.168.1.1",
+	["Name"] 			= "base4",
+	["Output"] 			= "/mnt/remote0/cap0.stats/",
+	["BPF"]  			= "host 192.168.2.136",
 	["RE"]   			= "",
-	["OutputFile"] 		= "/mnt/remote0/cap0.stats/",
-	["MicroBurst"] =
-	{
-		["TimeBucket"]		= 100e3,
-		["Trigger"]			= 1e9,
-	}
-})
-
-CreatePipeline(
-{
-	["Name"] 			= "gw1-core-network",
-	["BPF"]  			= "host 192.168.2.1",
-	["RE"]   			= "",
-	["OutputFile"] 		= "/mnt/remote0/cap0.stats/",
-	["MicroBurst"] =
-	{
-		["TimeBucket"]		= 100e3,
-		["Trigger"]			= 1e9,
-	}
+	["BurstTime"]		= 100e3,		
 })
 
