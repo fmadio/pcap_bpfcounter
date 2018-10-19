@@ -29,41 +29,6 @@
 #include "lua.h"
 
 //-------------------------------------------------------------------------------------------------
-// pcap headers
-
-#define PCAPHEADER_MAGIC_NANO		0xa1b23c4d
-#define PCAPHEADER_MAGIC_USEC		0xa1b2c3d4
-#define PCAPHEADER_MAJOR			2
-#define PCAPHEADER_MINOR			4
-#define PCAPHEADER_LINK_ETHERNET	1
-#define PCAPHEADER_LINK_ERF			197	
-
-//-------------------------------------------------------------------------------------------------
-
-typedef struct
-{
-	u32				Sec;				// time stamp sec since epoch 
-	u32				NSec;				// nsec fraction since epoch
-
-	u32				LengthCapture;		// captured length, inc trailing / aligned data
-	u32				LengthWire;			// length on the wire
-
-} __attribute__((packed)) PCAPPacket_t;
-
-// per file header
-
-typedef struct
-{
-
-	u32				Magic;
-	u16				Major;
-	u16				Minor;
-	u32				TimeZone;
-	u32				SigFlag;
-	u32				SnapLen;
-	u32				Link;
-
-} __attribute__((packed)) PCAPHeader_t;
 
 #define RMON1_RUNT			0
 #define RMON1_64			1
@@ -116,6 +81,12 @@ typedef struct
 
 	u64				TotalPkt;						// total packets hit
 	u64				TotalByte;						// total bytes hit 
+
+	u64				TCPCnt_FIN;						// total tcp FIN pkts 
+	u64				TCPCnt_SYN;						// total tcp SYN pkts 
+	u64				TCPCnt_RST;						// total tcp RST pkts 
+	u64				TCPCnt_ACK;						// total tcp ACK pkts 
+	u64				TCPCnt_PSH;						// total tcp PSH pkts 
 
 	// these fields get cleared every log cycle
 
@@ -294,14 +265,16 @@ int lpipe_output(lua_State* L)
 	fprintf(Pipe->OutputFile, "Output Time   : %16lli nsec\n", Pipe->OutputNS);
 	fprintf(Pipe->OutputFile, "------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
 
-	fprintf(Pipe->OutputFile, "%30s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s\n",
+	fprintf(Pipe->OutputFile, "%32s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s\n",
 			"Time", 
 			"EpochNS", 
 			"Packets", 
 			"Bytes", 
 			"BurstMax(Mbps)", 
 			"RateMean(Mbps)", 
-			"PctTotal",
+			"PctTotal(Mbps)",
+			"BurstMax(Pps)", 
+			"RateMean(Pps)", 
 			
 			"RMON1_runt",
 			"RMON1_64",
@@ -313,7 +286,13 @@ int lpipe_output(lua_State* L)
 			"RMON1_1024-2047",
 			"RMON1_2048-4095",
 			"RMON1_4096-8191",
-			"RMON1_8192"
+			"RMON1_8192",
+
+			"TCP.FIN",
+			"TCP.SYN",
+			"TCP.RST",
+			"TCP.ACK",
+			"TCP.PSH"
 	);
 
 	return 0;
@@ -345,9 +324,16 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	u64 BytesMin = 1e12;
 	u64 BytesMax = 0;
 
+	u64 PktMin = 1e12;
+	u64 PktMax = 0;
+
 	u64 ByteS0	= 0;
 	u64 ByteS1	= 0;
 	u64 ByteS2	= 0;
+
+	u64 PktS0	= 0;
+	u64 PktS1	= 0;
+	u64 PktS2	= 0;
 
 	for (int i=0; i < Pipe->TimeBinMax; i++)
 	{
@@ -356,22 +342,33 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 			BytesMax = Pipe->Time.BinByte[i]; 
 		}
 
+		if (PktMax < Pipe->Time.BinPkt[i]) 
+		{
+			PktMax = Pipe->Time.BinPkt[i]; 
+		}
+
 		// calcualte mean / stdev 
 		ByteS0	+= 1; 
-		ByteS1 += Pipe->Time.BinByte[i];
-		ByteS2 += Pipe->Time.BinByte[i] * Pipe->Time.BinByte[i];
+		ByteS1 	+= Pipe->Time.BinByte[i];
+		ByteS2 	+= Pipe->Time.BinByte[i] * Pipe->Time.BinByte[i];
+
+		PktS0	+= 1; 
+		PktS1 	+= Pipe->Time.BinPkt[i];
+		PktS2 	+= Pipe->Time.BinPkt[i] * Pipe->Time.BinPkt[i];
 	}
 
-	u64 BpsMin  = 1e9 * (8.0 * (float)BytesMin) / (float)Pipe->TimeBinNS;
-	u64 BpsMax  = 1e9 * (8.0 * (float)BytesMax) / (float)Pipe->TimeBinNS;
+	u64 BpsMax  =  1e9 * (8.0 * (float)BytesMax) / (float)Pipe->TimeBinNS;
 	u64 BpsMean = (1e9 * 8.0 * ByteS1) / g_OutputTimeNS; 
+
+	u64 PpsMax  =  1e9 * ((float)PktMax) / (float)Pipe->TimeBinNS;
+	u64 PpsMean = (1e9 * PktS1) / g_OutputTimeNS; 
 
 	float BytePct = Pipe->Time.Byte * inverse(Pipe->Time.AllByte); 
 
 	u8 DateTime[128];
 	ns2str(DateTime, LastTS);
 
-	fprintf(Pipe->OutputFile, "%30s, %20lli, %20lli, %20lli, %20.3f, %20.3f, %20.6f, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i\n",
+	fprintf(Pipe->OutputFile, "%32s, %20lli, %20lli, %20lli, %20.3f, %20.3f, %20.6f, %20lli, %20lli, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i\n",
 			DateTime,	
 			LastTS,
 			Pipe->TotalPkt,
@@ -379,6 +376,9 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 			BpsMax/1e6,	
 			BpsMean/1e6,
 			BytePct,
+
+			PpsMax,	
+			PpsMean,
 		
 			Pipe->Time.RMON1[RMON1_RUNT],
 			Pipe->Time.RMON1[RMON1_64],
@@ -390,7 +390,13 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 			Pipe->Time.RMON1[RMON1_1024_1518] + Pipe->Time.RMON1[RMON1_1519_2047],
 			Pipe->Time.RMON1[RMON1_2048_4095],
 			Pipe->Time.RMON1[RMON1_4096_8191],
-			Pipe->Time.RMON1[RMON1_8192]
+			Pipe->Time.RMON1[RMON1_8192],
+
+			Pipe->TCPCnt_FIN,
+			Pipe->TCPCnt_SYN,
+			Pipe->TCPCnt_RST,
+			Pipe->TCPCnt_ACK,
+			Pipe->TCPCnt_PSH
 	);
 
 	fflush(Pipe->OutputFile);
@@ -403,6 +409,13 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	Pipe->Time.AllPkt = 0;
 	Pipe->Time.AllByte = 0;
 	memset(&Pipe->Time.RMON1, 0, sizeof(Pipe->Time.RMON1) );
+
+	// clear tcp flag stats 
+	Pipe->TCPCnt_FIN = 0;
+	Pipe->TCPCnt_SYN = 0;
+	Pipe->TCPCnt_RST = 0;
+	Pipe->TCPCnt_ACK = 0;
+	Pipe->TCPCnt_PSH = 0;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -508,8 +521,105 @@ int Parse_Start(void)
 
 				// update RMON stats
 				u32 RMONIndex = Length2RMON1(PktHeader->LengthWire);
-
 				Pipe->Time.RMON1[RMONIndex]++;
+
+				// per protocol stats 
+				{
+					fEther_t* Ether = (fEther_t*)(PktHeader + 1);	
+					u8* Payload 	= (u8*)(Ether + 1);
+					u16 EtherProto 	= swap16(Ether->Proto);
+
+					// VLAN decoder
+					if (EtherProto == ETHER_PROTO_VLAN)
+					{
+						VLANTag_t* Header 	= (VLANTag_t*)(Ether+1);
+						u16* Proto 			= (u16*)(Header + 1);
+
+						// update to the acutal proto / ipv4 header
+						EtherProto 			= swap16(Proto[0]);
+						Payload 			= (u8*)(Proto + 1);
+
+						// VNTag unpack
+						if (EtherProto == ETHER_PROTO_VNTAG)
+						{
+							VNTag_t* Header = (VNTag_t*)(Proto+1);
+							Proto 			= (u16*)(Header + 1);
+
+							// update to the acutal proto / ipv4 header
+							EtherProto 		= swap16(Proto[0]);
+							Payload 		= (u8*)(Proto + 1);
+						}
+
+						// is it double tagged ? 
+						if (EtherProto == ETHER_PROTO_VLAN)
+						{
+							Header 			= (VLANTag_t*)(Proto+1);
+							Proto 			= (u16*)(Header + 1);
+
+							// update to the acutal proto / ipv4 header
+							EtherProto 		= swap16(Proto[0]);
+							Payload 		= (u8*)(Proto + 1);
+						}
+					}
+
+					// MPLS decoder	
+					if (EtherProto == ETHER_PROTO_MPLS)
+					{
+						MPLSHeader_t* MPLS = (MPLSHeader_t*)(Payload);
+
+						// for now only process outer tag
+						// assume there is a sane limint on the encapsulation count
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+
+						// update to next header
+						if (MPLS->BOS)
+						{
+							EtherProto = ETHER_PROTO_IPV4;
+							Payload = (u8*)(MPLS + 1);
+						}
+					}
+
+					// ipv4 info
+					if (EtherProto == ETHER_PROTO_IPV4)
+					{
+						IP4Header_t* IP4 = (IP4Header_t*)Payload;
+
+						// IPv4 protocol decoders 
+						u32 IPOffset = (IP4->Version & 0x0f)*4; 
+						switch (IP4->Proto)
+						{
+						case IPv4_PROTO_TCP:
+							{
+								TCPHeader_t* TCP = (TCPHeader_t*)(Payload + IPOffset);
+
+								Pipe->TCPCnt_FIN  += TCP_FLAG_FIN(TCP->Flags);
+								Pipe->TCPCnt_SYN  += TCP_FLAG_SYN(TCP->Flags);
+								Pipe->TCPCnt_RST  += TCP_FLAG_RST(TCP->Flags);
+								Pipe->TCPCnt_ACK  += TCP_FLAG_ACK(TCP->Flags);
+								Pipe->TCPCnt_PSH  += TCP_FLAG_PSH(TCP->Flags);
+							}
+							break;
+						case IPv4_PROTO_UDP:
+							{
+								UDPHeader_t* UDP = (UDPHeader_t*)(Payload + IPOffset);
+
+							}
+							break;
+
+						}
+					}
+				}
 			}
 
 			// time bin in comparsion 

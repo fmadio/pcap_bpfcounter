@@ -1,10 +1,25 @@
+//---------------------------------------------------------------------------------------------
+//
+// Copyright (c) 2018, fmad engineering llc 
+//
+// The MIT License (MIT) see LICENSE file for details 
+//
+// pcap latency diff  
+//
+//---------------------------------------------------------------------------------------------
+
 #ifndef __F_TYPES_H__
 #define __F_TYPES_H__
 
 #include <math.h>
 #include <limits.h>
 #include <assert.h>
-#include <string.h>
+#include <time.h>
+#include <sys/time.h>
+
+typedef unsigned int		bool;
+#define true				1
+#define false				0
 
 typedef unsigned char		u8;
 typedef char				s8;
@@ -18,69 +33,14 @@ typedef int					s32;
 typedef unsigned long long	u64;
 typedef long long			s64;
 
-typedef union
-{
-	u8	_u8;
-	u16	_u16;
-	s16	_s16;
-	s32	_s32;
-	u32	_u32;
-	u64	_u64;
-	s64	_s64;
+#define k1E9 1000000000ULL
 
-	float	f;
-	double	d;
+#define kKB(a) ( ((u64)a)*1024ULL)
+#define kMB(a) ( ((u64)a)*1024ULL*1024ULL)
+#define kGB(a) ( ((u64)a)*1024ULL*1024ULL*1024ULL)
+#define kTB(a) ( ((u64)a)*1024ULL*1024ULL*1024ULL*1024ULL)
 
-} MultiType_u;
-
-#define DSCALE 				(1.0 / 10000.0)
-#define D4SCALE 			(1.0 / 10000.0)
-#define k1E9 				1000000000ULL
-
-#define kKB(a) 				(((u64)a)*1024ULL)
-#define kMB(a) 				(((u64)a)*1024ULL*1024ULL)
-#define kGB(a)				(((u64)a)*1024ULL*1024ULL*1024ULL)
-#define kTB(a)				(((u64)a)*1024ULL*1024ULL*1024ULL*1024ULL)
-#define kGiB(a)				(((u64)a)*1024ULL*1024ULL*1024ULL)
-#define kTiB(a)				(((u64)a)*1024ULL*1024ULL*1024ULL*1024ULL)
-
-#define kYearNS(a) 			((u64)a  * 365ULL * 24ULL * 60ULL * 60ULL *  1000000000ULL) 
-#define kYearNSEpoch(a) 	((u64)(a - 1970)  * 365ULL * 24ULL * 60ULL * 60ULL *  1000000000ULL) 
-
-#define LIMIT_U64_MIN		0	
-#define LIMIT_U64_MAX		(0xffffffffffffffffLL)
-
-#define true		1
-#define false		0
-
-#ifndef NULL
-	#define NULL	0
-#endif
-
-#define INLINE		inline
-
-// linux defines
-#define __USE_FILE_OFFSET64 1
-
-#ifndef __cplusplus
-	typedef unsigned int bool;
-#endif
-
-#include <time.h>
-#include <sys/time.h>
-#include <dirent.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-#define PACKED		__attribute__((packed))	
-#define FileOpen	fopen64
-#define FileClose	fclose	
-#define FileRead	fread	
-#define FilePrintf	fprintf	
-#define FileWrite	fwrite	
-#define FileSeek	fseeko64	
-#define FileTell	ftello64	
-#define FileFlush	fflush	
+// time utils
 
 typedef struct
 {
@@ -97,16 +57,16 @@ static clock_date_t  clock_date(void)
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 
-	struct tm t;
-	localtime_r(&tv.tv_sec, &t);
+	struct tm* t = localtime(&tv.tv_sec);
 
 	clock_date_t c; 
-	c.year		= 1900 + t.tm_year;
-	c.month		= 1 + t.tm_mon;
-	c.day		= t.tm_mday;
-	c.hour		= t.tm_hour;
-	c.min		= t.tm_min;
-	c.sec		= t.tm_sec;
+
+	c.year		= 1900 + t->tm_year;
+	c.month		= 1 + t->tm_mon;
+	c.day		= t->tm_mday;
+	c.hour		= t->tm_hour;
+	c.min		= t->tm_min;
+	c.sec		= t->tm_sec;
 
 	return c;
 }
@@ -146,7 +106,7 @@ static inline void  clock_rfc1123(u8* Str, clock_date_t c)
 
 static inline void  clock_str(u8* Str, clock_date_t c)
 {
-	sprintf(Str, "%04i%02i%02i_%02i%02i%02i", c.year, c.month, c.day, c.hour, c.min, c.sec);
+	sprintf(Str, "%04i%02i%02i_%02i-%02i-%02i", c.year, c.month, c.day, c.hour, c.min, c.sec);
 }
 static inline void  ns_str(u8* Str, u64 NS) 
 {
@@ -158,8 +118,7 @@ static inline void  ns_str(u8* Str, u64 NS)
 	sprintf(Str, "%03i.%03i.%03i", msec, usec, nsec);
 }
 
-
-// GMT epoch nanos -> year, mont, day, ..
+// epoch nanos -> year, mont, day, ..
 static clock_date_t  ns2clock(u64 ts)
 {
 	time_t t0 = ts / 1e9;
@@ -236,7 +195,7 @@ static clock_date_t clock_startofweek(clock_date_t d)
 }
 
 
-// epoch in nanos in GMT timezone 
+// epoch in nanos 
 static u64 clock_ns(void)
 {
 	struct timeval tv;
@@ -245,22 +204,15 @@ static u64 clock_ns(void)
 	return (u64)tv.tv_sec *(u64)1e9 +(u64)tv.tv_usec * (u64)1e3;
 }
 
-static INLINE volatile u64 rdtsc(void)
+static inline volatile u64 rdtsc(void)
 {
 	u32 hi, lo;
 	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi) );
 	return (((u64)hi)<<32ULL) | (u64)lo;
 }
-static INLINE volatile u64 rdtsc2(void)
-{
-	u32 hi, lo;
-	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi) );
-	return (((u64)hi)<<32ULL) | (u64)lo;
-}
-
 
 extern double TSC2Nano;
-static INLINE volatile u64 rdtsc_ns(void)
+static inline volatile u64 rdtsc_ns(void)
 {
 	u32 hi, lo;
 	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi) );
@@ -269,17 +221,17 @@ static INLINE volatile u64 rdtsc_ns(void)
 	return ts * TSC2Nano; 
 }
 
-static INLINE volatile u64 rdtsc2ns(u64 ts)
+static inline volatile u64 rdtsc2ns(u64 ts)
 {
 	return ts * TSC2Nano; 
 }
 
-static INLINE volatile u64 tsc2ns(u64 ts)
+static inline volatile u64 tsc2ns(u64 ts)
 {
 	return ts * TSC2Nano; 
 }
 
-static INLINE u64 ns2tsc(u64 ns)
+static inline u64 ns2tsc(u64 ns)
 {
 	return (u64)( (double)ns / TSC2Nano);
 }
@@ -296,130 +248,89 @@ static void ndelay(u64 ns)
 	}
 }
 
-static INLINE void prefetchnta(void* ptr)
+static inline void prefetchnta(void* ptr)
 {
 	__asm__ volatile("prefetchnta (%0)" :  : "r"(ptr));
 }
-static INLINE void prefetcht0(void* ptr)
-{
-	__asm__ volatile("prefetcht0  (%0)" :  : "r"(ptr));
-}
-static INLINE void prefetcht1(void* ptr)
-{
-	__asm__ volatile("prefetcht1  (%0)" :  : "r"(ptr));
-}
-static INLINE void prefetcht2(void* ptr)
-{
-	__asm__ volatile("prefetcht2  (%0)" :  : "r"(ptr));
-}
 
-static INLINE void clflush(void* ptr)
-{
-	__asm__ volatile("clflush  (%0)" :  : "r"(ptr));
-}
-static INLINE void clflushopt(void* ptr)
-{
-	__asm__ volatile("clflushopt  (%0)" :  : "r"(ptr));
-}
-
-static INLINE void clwb(void* ptr)
-{
-	__asm__ volatile("clwb  (%0)" :  : "r"(ptr));
-}
-
-static INLINE void sfence(void)
-{
-	__asm__ volatile("sfence");
-}
-
-static INLINE void mfence(void)
-{
-	__asm__ volatile("mfence");
-}
-
-static INLINE void lfence(void)
-{
-	__asm__ volatile("lfence");
-}
-
-static INLINE u32 swap32(const u32 a)
+static inline u32 swap32(const u32 a)
 {
 	return (((a>>24)&0xFF)<<0) | (((a>>16)&0xFF)<<8) | (((a>>8)&0xFF)<<16) | (((a>>0)&0xFF)<<24);
 }
 
-static INLINE u16 swap16(const u16 a)
+static inline u16 swap16(const u16 a)
 {
 	return (((a>>8)&0xFF)<<0) | (((a>>0)&0xFF)<<8);
 }
 
-static INLINE u64 swap64(const u64 a)
+static inline u64 swap64(const u64 a)
 {
 	return swap32(a>>32ULL) | ( (u64)swap32(a) << 32ULL); 
 }
 
-static INLINE u32 min32(const u32 a, const u32 b)
+static inline u32 min32(const u32 a, const u32 b)
 {
 	return (a < b) ? a : b;
 }
 
-static INLINE s32 min32s(const s32 a, const s32 b)
+static inline s32 min32s(const s32 a, const s32 b)
 {
 	return (a < b) ? a : b;
 }
 
-static INLINE u32 max32(const u32 a, const u32 b)
+static inline u32 max32(const u32 a, const u32 b)
 {
 	return (a > b) ? a : b;
 }
-static INLINE s32 max32s(const s32 a, const s32 b)
+static inline s32 max32s(const s32 a, const s32 b)
 {
 	return (a > b) ? a : b;
 }
 
 
-static INLINE s32 sign32(const s32 a)
+static inline s32 sign32(const s32 a)
 {
 	if (a == 0) return 0;
 	return (a > 0) ? 1 : -1;
 }
 
-static INLINE u64 min64(const u64 a, const u64 b)
+static inline u64 min64(const u64 a, const u64 b)
 {
 	return (a < b) ? a : b;
 }
 
-static INLINE u64 max64(const u64 a, const u64 b)
+static inline u64 max64(const u64 a, const u64 b)
 {
 	return (a > b) ? a : b;
 }
 
-static INLINE double maxf(const double a, const double b)
+static inline double maxf(const double a, const double b)
 {
 	return (a > b) ? a : b;
 }
 
-static INLINE double minf(const double a, const double b)
+static inline double minf(const double a, const double b)
 {
 	return (a < b) ? a : b;
 }
-static INLINE double clampf(const double min, const double v, const double max)
+static inline double clampf(const double min, const double v, const double max)
 {
 	return maxf(min, minf(v,  max)); 
 }
 
-static INLINE double inverse(const double a)
+static inline double inverse(const double a)
 {
 	if (a == 0) return 0;
 	return 1.0 / a;
 }
 
-static INLINE double fSqrt(const double a)
+static inline double fSqrt(const double a)
 {
 	if (a <= 0) return 0;
 	return sqrtf(a);
 }
 
-static INLINE double signf(const double a)
+static inline double signf(const double a)
 {
 	if (a > 0) return  1.0;
 	if (a < 0) return -1.0;
@@ -427,14 +338,15 @@ static INLINE double signf(const double a)
 	// keep it simple..
 	return 1;
 }
-static INLINE double alog(const double a)
+
+static inline double alog(const double a)
 {
 	if (a == 0) return 0;
 	if (a < 0) return -logf(-a);
 	return -logf(a);
 }
 
-static INLINE char* FormatTS(u64 ts)
+static inline char* FormatTS(u64 ts)
 {
 	u64 usec = ts / 1000ULL;
 	u64 msec = usec / 1000ULL;
@@ -455,8 +367,10 @@ static INLINE char* FormatTS(u64 ts)
 	Pos = (Pos + 1) & 0xf;
 
 	sprintf(S, "%02lli:%02lli:%02lli.%03lli.%03lli.%03lli", hour % 24, min, sec, msec,usec, nsec);
+
 	return S;
 }
+
 static inline void  ns2str(u8* Str, u64 TS) 
 {
 	clock_date_t c = ns2clock(TS);
@@ -469,83 +383,205 @@ static inline void  ns2str(u8* Str, u64 TS)
 	sprintf(Str, "%04i-%02i-%02i_%02i:%02i:%02i.%03i.%03i.%03i", c.year, c.month, c.day, c.hour % 24, c.min, c.sec, msec, usec, nsec);
 }
 
-
-static INLINE void CycleCalibration(void)
+static inline void CycleCalibration(void)
 {
     fprintf(stderr, "calibrating...\n");
     u64 StartTS[16];
     u64 EndTS[16];
 
-	// parse /proc/cpuinfo to get the target rdtsc freq
-	// lazymans cpuid
-
-	FILE * F = fopen("/proc/cpuinfo", "r");	
-	static char Buffer[1024];
-	fread(Buffer, 1024, 1, F);
-	fclose(F);
-
-	u64 TargetFreq = 0;
-	if (strstr(Buffer, "E5-1620 v3") != NULL) TargetFreq = 3.5e9;
-	if (strstr(Buffer, "E5-1630 v3") != NULL) TargetFreq = 3.7e9;
-	if (strstr(Buffer, "E5-1650 v3") != NULL) TargetFreq = 3.5e9;
-	if (strstr(Buffer, "E5-2620 v3") != NULL) TargetFreq = 2.4e9;
-	if (strstr(Buffer, "E5-2620 v4") != NULL) TargetFreq = 2.1e9;
-	if (strstr(Buffer, "E5-2667 v4") != NULL) TargetFreq = 3.2e9;
-	if (strstr(Buffer, "N3050")      != NULL) TargetFreq = 1.6e9;		// fmad1g 
-
-	// calibrate exactly
     u64 CyclesSum   = 0;
     u64 CyclesSum2  = 0;
     u64 CyclesCnt   = 0;
-	int i;
-    for (i=0; i < 5; i++)
- 	{
+    for (int i=0; i < 1; i++)
+    {
         u64 NextTS = clock_ns() + 1e9;
-        u64 StartTSC = rdtsc();
+        u64 StartTS = rdtsc();
         while (clock_ns() < NextTS)
         {
-        	if ((rdtsc() - StartTSC) > 5 * TargetFreq)
-			{
-        		fprintf(stderr, "%i : Calibration overflow: %lli : %lli\n", i, clock_ns(), NextTS);  
-				break;
-			}
         }
-        u64 EndTSC  = rdtsc();
+        u64 EndTS  = rdtsc();
 
-        u64 Cycles = EndTSC - StartTSC;
+        u64 Cycles = EndTS - StartTS;
         CyclesSum += Cycles;
         CyclesSum2 += Cycles*Cycles;
         CyclesCnt++;
 
-		s64 CycleDelta = abs(Cycles - TargetFreq);
-        fprintf(stderr, "%i : %lli %16.4f cycles/nsec offset:%.3f Mhz\n", i, Cycles, Cycles / 1e9, CycleDelta / 1e6);
-
-		// if within 100mhz of target freq then continue
-		if (CycleDelta < 10e6) break;
+        fprintf(stderr, "%i : %016llx %16.4f cycles/nsec\n", i, Cycles, Cycles / 1e9);
     }
 
     double CyclesSec = CyclesSum / CyclesCnt;
     double CyclesStd = sqrt(CyclesCnt *CyclesSum2 - CyclesSum *CyclesSum) / CyclesCnt;
-    fprintf(stderr, "Cycles/Sec %12.4f Std:%8.f cycle std(%12.8f) Target:%.2f Ghz\n", CyclesSec, CyclesStd, CyclesStd / CyclesSec, TargetFreq / 1e9);
+    fprintf(stderr, "Cycles/Sec %12.4f Std:%8.fcycle std(%12.8f)\n", CyclesSec, CyclesStd, CyclesStd / CyclesSec);
 
 	// set global
+
 	TSC2Nano = 1e9 / CyclesSec;
 }
-
 // convert pcap style sec : nsec format into pure nano
 static inline u64 nsec2ts(u32 sec, u32 nsec)
 {
-	return (u64)sec * 1000000000ULL + (u64)(nsec & 0x7fffffff);
+	return (u64)sec * 1000000000ULL + (u64)nsec;
 }
 
-static void * memalign2(int align, size_t size)
+// ethernet header
+typedef struct
 {
-	void* a;
-	posix_memalign(&a, align, size);
-	return a;
-}
+	u8		Dst[6];
+	u8		Src[6];
+	u16		Proto;
 
-// defined in fmadio_trace.c
-u64 virt2phys(const void *virtaddr);
+} __attribute__((packed)) fEther_t;
+
+#define ETHER_PROTO_ARP			0x0806 
+#define ETHER_PROTO_IPV4		0x0800 
+#define ETHER_PROTO_IPV6		0x86dd 
+#define ETHER_PROTO_IP  		0x0888		// special made up type indicating ipv4 or ipv6 
+#define ETHER_PROTO_VLAN		0x8100	
+#define ETHER_PROTO_VNTAG		0x8926		// vntag / etag
+#define ETHER_PROTO_MPLS		0x8847
+
+
+typedef struct
+{
+	union
+	{
+		u32		IP4;	
+		u8		IP[4];
+	};
+
+} IP4_t;
+
+typedef struct
+{
+	u8		Version;
+	u8		Service;
+	u16		Len;
+	u16		Ident;
+	u16		Frag;
+	u8		TTL;
+	u8		Proto;
+	u16		CSum;
+
+	IP4_t	Src;
+	IP4_t	Dst;
+
+} __attribute__((packed)) IP4Header_t;
+
+#define IPv4_PROTO_ICMP			1
+#define IPv4_PROTO_IGMP			2
+#define IPv4_PROTO_TCP			6
+#define IPv4_PROTO_UDP			17	
+#define IPv4_PROTO_GRE			0x2f	
+#define IPv4_PROTO_VRRP			0x70	
+
+#define TCP_FLAG_FIN(a) ((a >>(8+0))&1)
+#define TCP_FLAG_SYN(a) ((a >>(8+1))&1)
+#define TCP_FLAG_RST(a) ((a >>(8+2))&1)
+#define TCP_FLAG_PSH(a) ((a >>(8+3))&1)
+#define TCP_FLAG_ACK(a) ((a >>(8+4))&1)
+#define TCP_FLAG_URG(a) ((a >>(8+5))&1)
+#define TCP_FLAG_ECE(a) ((a >>(8+6))&1)
+#define TCP_FLAG_CWR(a) ((a >>(8+7))&1)
+
+typedef struct
+{
+	u16			PortSrc;
+	u16			PortDst;
+	u32			SeqNo;
+	u32			AckNo;
+	u16			Flags;
+	u16			Window;
+	u16			CSUM;
+	u16			Urgent;
+
+} __attribute__((packed)) TCPHeader_t;
+
+typedef struct
+{
+	u16			PortSrc;
+	u16			PortDst;
+	u16			Length;
+	u16			CSUM;
+
+} __attribute__((packed)) UDPHeader_t;
+
+// VLAN 
+typedef struct
+{
+	u16			VIDhi	: 4;
+	u16			DEI		: 1;
+	u16			PCP		: 3;
+	u16			VIDlo	: 8;
+
+} __attribute__((packed)) VLANTag_t;
+#define VLANTag_ID(a) (( a->VIDhi << 8 ) | a->VIDlo )
+
+typedef struct
+{
+	u16			VIDhi	: 4;
+	u16			DEI		: 1;
+	u16			PCP		: 3;
+	u16			VIDlo	: 8;
+
+	u16		 	Proto;		
+
+} __attribute__((packed)) VLANHeader_t;
+
+// just skip the tag its 4 bytes + 2 bytes for the proto (2 more than a vlan tag)
+typedef struct
+{
+	u8			pad[4];
+
+} __attribute__((packed)) VNTag_t; 
+
+// NOTE: the bit pattern is all fucked up due to it being bigedian structure with gcc bitfieds 
+typedef struct
+{
+	u32			L0		: 8; 	// label[19:12]	
+	u32			L1		: 8; 	// label[11:4]	
+
+
+	u32			BOS		: 1;	
+	u32			TC		: 3;	
+
+	u32			L2		: 4;	// label[3:0]	
+
+	u32			TTL		: 8;	
+
+} __attribute__((packed)) MPLSHeader_t;
+#define MPLS_LABEL(a)  ( (a->L0 << 12) | (a->L1<<4) | a->L2 )
+
+
+// pcap headers
+
+#define PCAPHEADER_MAGIC_NANO		0xa1b23c4d
+#define PCAPHEADER_MAGIC_USEC		0xa1b2c3d4
+#define PCAPHEADER_MAJOR			2
+#define PCAPHEADER_MINOR			4
+#define PCAPHEADER_LINK_ETHERNET	1
+
+typedef struct
+{
+	u32				Sec;				// time stamp sec since epoch 
+	u32				NSec;				// nsec fraction since epoch
+
+	u32				LengthCapture;		// captured length, inc trailing / aligned data
+	u32				LengthWire;			// length on the wire
+
+} __attribute__((packed)) PCAPPacket_t;
+
+// per file header
+
+typedef struct
+{
+	u32				Magic;
+	u16				Major;
+	u16				Minor;
+	u32				TimeZone;
+	u32				SigFlag;
+	u32				SnapLen;
+	u32				Link;
+
+} __attribute__((packed)) PCAPHeader_t;
 
 #endif

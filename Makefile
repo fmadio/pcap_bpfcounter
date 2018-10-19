@@ -1,15 +1,8 @@
 OBJS =
 OBJS += parser.o
-#OBJS += fMap.o
-#OBJS += fFastCGI.o
-#OBJS += dlstub.o
-#OBJS += ../common/fmadio_trace.o 
 
 LOBJS =
 LOBJS += lmain.o
-#LOBJS += lstrings.bin
-#LOBJS += lcpp.bin
-#LOBJS += ljson.bin
 
 DEF = 
 DEF += -O3 
