@@ -18,15 +18,6 @@ typedef int					s32;
 typedef unsigned long long	u64;
 typedef long long			s64;
 
-/*
-typedef struct
-{
-	unsigned long long	hi;
-	unsigned long long	lo;
-} u128;
-*/
-typedef unsigned __int128	u128;
-
 typedef union
 {
 	u8	_u8;
@@ -364,12 +355,6 @@ static INLINE u16 swap16(const u16 a)
 static INLINE u64 swap64(const u64 a)
 {
 	return swap32(a>>32ULL) | ( (u64)swap32(a) << 32ULL); 
-}
-
-static INLINE u128 swap128(const u128 a)
-{
-	u64* p = (u64*)&a;
-	return (u128)swap64(p[1]) | ((u128)swap64(p[0]));
 }
 
 static INLINE u32 min32(const u32 a, const u32 b)
