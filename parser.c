@@ -132,9 +132,8 @@ static u32				s_PipelineMax = 16*1024;
 static Pipeline_t* 		s_PipelineList[16*1024];	
 
 //-------------------------------------------------------------------------------------------------
-static inline u32 Length2RMON1(const char Length)
+static inline u32 Length2RMON1(const u32 Length)
 {
-
 	if (Length < 64) return RMON1_RUNT;
 	if (Length == 64) return RMON1_64;
 	if (Length <= 127) return RMON1_64_127;
@@ -404,7 +403,6 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	Pipe->Time.AllPkt = 0;
 	Pipe->Time.AllByte = 0;
 	memset(&Pipe->Time.RMON1, 0, sizeof(Pipe->Time.RMON1) );
-
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -414,7 +412,6 @@ int Parse_Start(void)
 	u64 StartTS					= clock_ns();
 	u64 PCAPOffset				= 0;
 	u64 TotalPkt				= 0;
-
 
 	FILE* FIn = stdin; 
 	assert(FIn != NULL);
@@ -511,6 +508,7 @@ int Parse_Start(void)
 
 				// update RMON stats
 				u32 RMONIndex = Length2RMON1(PktHeader->LengthWire);
+
 				Pipe->Time.RMON1[RMONIndex]++;
 			}
 
@@ -572,5 +570,4 @@ void Parse_Open(lua_State* L)
 	lua_register_pipe(L, "burst",			lpipe_burst);
 	lua_register_pipe(L, "output",			lpipe_output);
 	lua_register_pipe(L, "output_time",		lpipe_output_time);
-
 }
