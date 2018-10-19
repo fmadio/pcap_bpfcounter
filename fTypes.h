@@ -440,7 +440,6 @@ typedef struct
 #define ETHER_PROTO_VNTAG		0x8926		// vntag / etag
 #define ETHER_PROTO_MPLS		0x8847
 
-
 typedef struct
 {
 	union
@@ -550,7 +549,6 @@ typedef struct
 
 } __attribute__((packed)) MPLSHeader_t;
 #define MPLS_LABEL(a)  ( (a->L0 << 12) | (a->L1<<4) | a->L2 )
-
 
 // pcap headers
 
