@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -96,6 +97,23 @@ typedef struct
 
 } Pipeline_t;
 
+typedef struct PacketBuffer_t
+{
+	u32						PktCnt;				// number of packets in this buffer
+	u32						ByteWire;			// total wire bytes 
+	u32						ByteCapture;		// total captured bytes 
+
+	u64						TSFirst;			// first Pkt TS
+	u64						TSLast;				// last Pkt TS
+
+	u32						BufferMax;			// max size
+	u8*						Buffer;				// memory buffer
+	u32						BufferLength;		// length of valid data in buffer
+
+} PacketBuffer_t;
+
+
+
 extern u64				g_OutputTimeNS;				// time between outputs
 
 static u32				s_PipelinePos = 0;
@@ -118,7 +136,6 @@ static inline u32 Length2RMON1(const u32 Length)
 
 	return RMON1_8192;
 }
-
 
 //-------------------------------------------------------------------------------------------------
 // create a new pipeline 
@@ -419,6 +436,17 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 }
 
 //-------------------------------------------------------------------------------------------------
+// close 
+void Pipeline_Close(Pipeline_t* Pipe, u64 LastTS)
+{
+	// flush last log entry
+	Pipeline_WriteLog(Pipe, LastTS);
+
+	fclose(Pipe->OutputFile);
+	Pipe->OutputFile = NULL;
+}
+
+//-------------------------------------------------------------------------------------------------
 
 int Parse_Start(void)
 {
@@ -439,205 +467,320 @@ int Parse_Start(void)
 	}
 	PCAPOffset		= sizeof(PCAPHeader_t);
 
+	bool IsPCAP = false;
+	bool IsFMAD = false;
 	u64 TScale = 0;
 	switch (HeaderMaster.Magic)
 	{
-	case PCAPHEADER_MAGIC_NANO: fprintf(stderr, "PCAP Nano\n"); TScale = 1;    break;
-	case PCAPHEADER_MAGIC_USEC: fprintf(stderr, "PCAP Micro\n"); TScale = 1000; break;
+	case PCAPHEADER_MAGIC_NANO: fprintf(stderr, "PCAP Nano\n"); 	TScale = 1;     IsPCAP = true; break;
+	case PCAPHEADER_MAGIC_USEC: fprintf(stderr, "PCAP Micro\n"); 	TScale = 1000; 	IsPCAP = true; break;
+	case PCAPHEADER_MAGIC_FMAD: fprintf(stderr, "FMAD Chunked\n"); 	TScale = 1; 	IsFMAD = true; break;
 	}
 
 	u64 LastTS					= 0;
-	u64 NextPrintTS				= 0;
+	u64 LastTSC					= 0;
+	u64 NextOutputTS			= 0;
+	u64 NextPrintTSC			= 0;
 
-	u8* 			Pkt			= malloc(1024*1024);	
-	PCAPPacket_t*	PktHeader	= (PCAPPacket_t*)Pkt;
+	// create packet buffer
+	PacketBuffer_t*	PktBlock	= (PacketBuffer_t*)malloc(sizeof(PacketBuffer_t));
+	memset(PktBlock, 0, sizeof(PacketBuffer_t));
+
+	PktBlock->BufferMax			= kKB(256);
+	PktBlock->Buffer			= malloc( PktBlock->BufferMax ); 
+	assert(PktBlock->Buffer != 0);
+
+	u64   StreamCAT_BytePending	= 0;
+	float StreamCAT_CPUActive	= 0;
+	float StreamCAT_CPUFetch	= 0;
+	float StreamCAT_CPUSend		= 0;
 
 	while (!feof(FIn))
 	{
-		// header 
-		int rlen = fread(PktHeader, 1, sizeof(PCAPPacket_t), FIn);
-		if (rlen != sizeof(PCAPPacket_t)) break;
+		// reset packet buffer
+		PktBlock->PktCnt		= 0;
+		PktBlock->ByteWire		= 0;
+		PktBlock->ByteCapture	= 0;
 
-		// validate size
-		if ((PktHeader->LengthCapture == 0) || (PktHeader->LengthCapture > 128*1024)) 
+		PktBlock->TSFirst		= -1;
+		PktBlock->TSLast		= 0;
+
+		PktBlock->BufferLength	= 0;
+
+		// old style pcap
+		if (IsPCAP)
 		{
-			fprintf(stderr, "Invalid packet length: %i\n", PktHeader->LengthCapture);
-			break;
-		}
-
-		// payload
-		rlen = fread(PktHeader + 1, 1, PktHeader->LengthCapture, FIn);
-		if (rlen != PktHeader->LengthCapture)
-		{
-			fprintf(stderr, "payload read fail %i expect %i\n", rlen, PktHeader->LengthCapture);
-			break;
-		}
-		u64 PacketTS = (u64)PktHeader->Sec * 1000000000ULL + (u64)PktHeader->NSec * TScale;
-
-		// pcap header for BPF parser
-		struct pcap_pkthdr hdr;
-		hdr.ts.tv_sec	= PacketTS / (u64)1e9;
-		hdr.ts.tv_usec	= PacketTS % (u64)1e9;
-		hdr.caplen		= PktHeader->LengthCapture; 
-		hdr.len			= PktHeader->LengthWire;
-
-		u8* PacketPayload	= (u8*)(PktHeader + 1);
-
-		// process all pipelines	
-		for (int p=0; p < s_PipelinePos; p++)
-		{
-			Pipeline_t* Pipe = s_PipelineList[p];
-
-			// time rounted within the update rate 
-			u64 TimeSub = PacketTS % Pipe->OutputNS; 
-
-			// time bin for this packet
-			u64 TimeIndex = TimeSub / Pipe->TimeBinNS;
-
-			// sanitize index
-			if (TimeIndex >= Pipe->TimeBinMax)
+			while (PktBlock->BufferLength < PktBlock->BufferMax - kKB(16))
 			{
-				printf("[%-40s] time index out of range %i\n", Pipe->Name, TimeIndex);
-				TimeIndex = 0;
+				PCAPPacket_t*	PktHeader	= (PCAPPacket_t*)(PktBlock->Buffer + PktBlock->BufferLength);
+				
+				// header
+				int rlen = fread(PktHeader, 1, sizeof(PCAPPacket_t), FIn);
+				if (rlen != sizeof(PCAPPacket_t)) break;
+
+				// validate size
+				if ((PktHeader->LengthCapture == 0) || (PktHeader->LengthCapture > 128*1024)) 
+				{
+					fprintf(stderr, "Invalid packet length: %i\n", PktHeader->LengthCapture);
+					break;
+				}
+
+				// payload
+				rlen = fread(PktHeader + 1, 1, PktHeader->LengthCapture, FIn);
+				if (rlen != PktHeader->LengthCapture)
+				{
+					fprintf(stderr, "payload read fail %i expect %i\n", rlen, PktHeader->LengthCapture);
+					break;
+				}
+
+				u64 TS 				= (u64)PktHeader->Sec * 1000000000ULL + (u64)PktHeader->NSec * TScale;
+				u32 LengthWire 		= PktHeader->LengthWire;
+				u32 LengthCapture 	= PktHeader->LengthCapture;
+				u32 PortNo			= 0;
+
+				// in-place conversion to FMAD Packet 
+				FMADPacket_t* PktFMAD	= (FMADPacket_t*)PktHeader;
+				PktFMAD->TS				= TS;
+				PktFMAD->PortNo			= 0;
+				PktFMAD->Flag			= 0;
+				PktFMAD->LengthWire		= LengthWire;
+				PktFMAD->LengthCapture	= LengthCapture;
+
+				// next in packet block
+				PktBlock->BufferLength += sizeof(PCAPPacket_t) + LengthCapture;
+
+				// time range 
+				if (PktBlock->TSFirst == 0) PktBlock->TSFirst = TS;
+				PktBlock->TSLast = TS;
+
+				PktBlock->PktCnt		+= 1;
+				PktBlock->ByteWire		+= LengthWire; 
+				PktBlock->ByteCapture	+= LengthCapture;
+			}
+		}
+
+		// FMAD chunked format 
+		if (IsFMAD)
+		{
+			FMADHeader_t Header;
+			int rlen = fread(&Header, 1, sizeof(Header), FIn);
+			if (rlen != sizeof(Header))
+			{
+				fprintf(stderr, "FMADHeader read fail: %i %i : %i\n", rlen, sizeof(Header), errno, strerror(errno));
+				break;
 			}
 
-			// run BPF expression
-			int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
-			if (Result != 0)
+			// sanity checks
+			assert(Header.Length < 1024*1024);
+			assert(Header.PktCnt < 1e6);
+
+			rlen = fread(PktBlock->Buffer, 1, Header.Length, FIn);
+			if (rlen != Header.Length)
 			{
-				// BPF got a hit
-				Pipe->TotalPkt	+= 1;
-				Pipe->TotalByte	+= PktHeader->LengthWire;
+				fprintf(stderr, "FMADHeader payload read fail: %i %i : %i\n", rlen, Header.Length, errno, strerror(errno));
+				break;
+			}
 
-				Pipe->LastTS = PacketTS;
+			PktBlock->PktCnt		= Header.PktCnt; 
+			PktBlock->ByteWire		= Header.BytesWire;
+			PktBlock->ByteCapture	= Header.BytesCapture;
+			PktBlock->TSFirst		= Header.TSStart;
+			PktBlock->TSLast		= Header.TSEnd;
+			PktBlock->BufferLength	= Header.Length;
 
-				// update Bins
-				Pipe->Time.BinPkt [TimeIndex] += 1;
-				Pipe->Time.BinByte[TimeIndex] += PktHeader->LengthWire;
+			StreamCAT_BytePending = Header.BytePending;
+			StreamCAT_CPUActive   = Header.CPUActive / (float)0x10000;
+			StreamCAT_CPUFetch    = Header.CPUFetch / (float)0x10000;
+			StreamCAT_CPUSend     = Header.CPUSend / (float)0x10000;
+		}
 
-				// total stats
-				Pipe->Time.Pkt	+= 1;
-				Pipe->Time.Byte	+= PktHeader->LengthWire;
+		// process a block
+		u32 Offset = 0;
+		for (int i=0; i < PktBlock->PktCnt; i++)
+		{
+			FMADPacket_t* Pkt = (FMADPacket_t*)(PktBlock->Buffer + Offset);	
+			Offset 			+= sizeof(FMADPacket_t);
+			Offset 			+= Pkt->LengthCapture; 
 
-				// update RMON stats
-				u32 RMONIndex = Length2RMON1(PktHeader->LengthWire);
-				Pipe->Time.RMON1[RMONIndex]++;
+			// pcap header for BPF parser
+			struct pcap_pkthdr hdr;
+			hdr.ts.tv_sec	= Pkt->TS / (u64)1e9;
+			hdr.ts.tv_usec	= Pkt->TS % (u64)1e9;
+			hdr.caplen		= Pkt->LengthCapture; 
+			hdr.len			= Pkt->LengthWire;
 
-				// per protocol stats 
+			u8* PacketPayload	= (u8*)(Pkt + 1);
+
+			// process all pipelines	
+			for (int p=0; p < s_PipelinePos; p++)
+			{
+				Pipeline_t* Pipe = s_PipelineList[p];
+
+				// time rounted within the update rate 
+				u64 TimeSub = Pkt->TS % Pipe->OutputNS; 
+
+				// time bin for this packet
+				u64 TimeIndex = TimeSub / Pipe->TimeBinNS;
+
+				// sanitize index
+				if (TimeIndex >= Pipe->TimeBinMax)
 				{
-					fEther_t* Ether = (fEther_t*)(PktHeader + 1);	
-					u8* Payload 	= (u8*)(Ether + 1);
-					u16 EtherProto 	= swap16(Ether->Proto);
+					printf("[%-40s] time index out of range %i\n", Pipe->Name, TimeIndex);
+					TimeIndex = 0;
+				}
 
-					// VLAN decoder
-					if (EtherProto == ETHER_PROTO_VLAN)
+				// run BPF expression
+				int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
+				if (Result != 0)
+				{
+					// BPF got a hit
+					Pipe->TotalPkt	+= 1;
+					Pipe->TotalByte	+= Pkt->LengthWire;
+
+					Pipe->LastTS = Pkt->TS;
+
+					// update Bins
+					Pipe->Time.BinPkt [TimeIndex] += 1;
+					Pipe->Time.BinByte[TimeIndex] += Pkt->LengthWire;
+
+					// total stats
+					Pipe->Time.Pkt	+= 1;
+					Pipe->Time.Byte	+= Pkt->LengthWire;
+
+					// update RMON stats
+					u32 RMONIndex = Length2RMON1(Pkt->LengthWire);
+					Pipe->Time.RMON1[RMONIndex]++;
+
+					// per protocol stats 
 					{
-						VLANTag_t* Header 	= (VLANTag_t*)(Ether+1);
-						u16* Proto 			= (u16*)(Header + 1);
+						fEther_t* Ether = (fEther_t*)(Pkt + 1);	
+						u8* Payload 	= (u8*)(Ether + 1);
+						u16 EtherProto 	= swap16(Ether->Proto);
 
-						// update to the acutal proto / ipv4 header
-						EtherProto 			= swap16(Proto[0]);
-						Payload 			= (u8*)(Proto + 1);
-
-						// VNTag unpack
-						if (EtherProto == ETHER_PROTO_VNTAG)
-						{
-							VNTag_t* Header = (VNTag_t*)(Proto+1);
-							Proto 			= (u16*)(Header + 1);
-
-							// update to the acutal proto / ipv4 header
-							EtherProto 		= swap16(Proto[0]);
-							Payload 		= (u8*)(Proto + 1);
-						}
-
-						// is it double tagged ? 
+						// VLAN decoder
 						if (EtherProto == ETHER_PROTO_VLAN)
 						{
-							Header 			= (VLANTag_t*)(Proto+1);
-							Proto 			= (u16*)(Header + 1);
+							VLANTag_t* Header 	= (VLANTag_t*)(Ether+1);
+							u16* Proto 			= (u16*)(Header + 1);
 
 							// update to the acutal proto / ipv4 header
-							EtherProto 		= swap16(Proto[0]);
-							Payload 		= (u8*)(Proto + 1);
-						}
-					}
+							EtherProto 			= swap16(Proto[0]);
+							Payload 			= (u8*)(Proto + 1);
 
-					// MPLS decoder	
-					if (EtherProto == ETHER_PROTO_MPLS)
-					{
-						MPLSHeader_t* MPLS = (MPLSHeader_t*)(Payload);
-
-						// for now only process outer tag
-						// assume there is a sane limint on the encapsulation count
-						if (!MPLS->BOS)
-						{
-							MPLS += 1;
-						}
-						if (!MPLS->BOS)
-						{
-							MPLS += 1;
-						}
-						if (!MPLS->BOS)
-						{
-							MPLS += 1;
-						}
-
-						// update to next header
-						if (MPLS->BOS)
-						{
-							EtherProto = ETHER_PROTO_IPV4;
-							Payload = (u8*)(MPLS + 1);
-						}
-					}
-
-					// ipv4 info
-					if (EtherProto == ETHER_PROTO_IPV4)
-					{
-						IP4Header_t* IP4 = (IP4Header_t*)Payload;
-
-						// IPv4 protocol decoders 
-						u32 IPOffset = (IP4->Version & 0x0f)*4; 
-						switch (IP4->Proto)
-						{
-						case IPv4_PROTO_TCP:
+							// VNTag unpack
+							if (EtherProto == ETHER_PROTO_VNTAG)
 							{
-								TCPHeader_t* TCP = (TCPHeader_t*)(Payload + IPOffset);
+								VNTag_t* Header = (VNTag_t*)(Proto+1);
+								Proto 			= (u16*)(Header + 1);
 
-								Pipe->TCPCnt_FIN  += TCP_FLAG_FIN(TCP->Flags);
-								Pipe->TCPCnt_SYN  += TCP_FLAG_SYN(TCP->Flags);
-								Pipe->TCPCnt_RST  += TCP_FLAG_RST(TCP->Flags);
-								Pipe->TCPCnt_ACK  += TCP_FLAG_ACK(TCP->Flags);
-								Pipe->TCPCnt_PSH  += TCP_FLAG_PSH(TCP->Flags);
+								// update to the acutal proto / ipv4 header
+								EtherProto 		= swap16(Proto[0]);
+								Payload 		= (u8*)(Proto + 1);
 							}
-							break;
-						case IPv4_PROTO_UDP:
+
+							// is it double tagged ? 
+							if (EtherProto == ETHER_PROTO_VLAN)
 							{
-								UDPHeader_t* UDP = (UDPHeader_t*)(Payload + IPOffset);
+								Header 			= (VLANTag_t*)(Proto+1);
+								Proto 			= (u16*)(Header + 1);
+
+								// update to the acutal proto / ipv4 header
+								EtherProto 		= swap16(Proto[0]);
+								Payload 		= (u8*)(Proto + 1);
+							}
+						}
+
+						// MPLS decoder	
+						if (EtherProto == ETHER_PROTO_MPLS)
+						{
+							MPLSHeader_t* MPLS = (MPLSHeader_t*)(Payload);
+
+							// for now only process outer tag
+							// assume there is a sane limint on the encapsulation count
+							if (!MPLS->BOS)
+							{
+								MPLS += 1;
+							}
+							if (!MPLS->BOS)
+							{
+								MPLS += 1;
+							}
+							if (!MPLS->BOS)
+							{
+								MPLS += 1;
+							}
+
+							// update to next header
+							if (MPLS->BOS)
+							{
+								EtherProto = ETHER_PROTO_IPV4;
+								Payload = (u8*)(MPLS + 1);
+							}
+						}
+
+						// ipv4 info
+						if (EtherProto == ETHER_PROTO_IPV4)
+						{
+							IP4Header_t* IP4 = (IP4Header_t*)Payload;
+
+							// IPv4 protocol decoders 
+							u32 IPOffset = (IP4->Version & 0x0f)*4; 
+							switch (IP4->Proto)
+							{
+							case IPv4_PROTO_TCP:
+								{
+									TCPHeader_t* TCP = (TCPHeader_t*)(Payload + IPOffset);
+
+									Pipe->TCPCnt_FIN  += TCP_FLAG_FIN(TCP->Flags);
+									Pipe->TCPCnt_SYN  += TCP_FLAG_SYN(TCP->Flags);
+									Pipe->TCPCnt_RST  += TCP_FLAG_RST(TCP->Flags);
+									Pipe->TCPCnt_ACK  += TCP_FLAG_ACK(TCP->Flags);
+									Pipe->TCPCnt_PSH  += TCP_FLAG_PSH(TCP->Flags);
+								}
+								break;
+							case IPv4_PROTO_UDP:
+								{
+									UDPHeader_t* UDP = (UDPHeader_t*)(Payload + IPOffset);
+
+								}
+								break;
 
 							}
-							break;
-
 						}
 					}
 				}
+
+				// time bin in comparsion 
+				Pipe->Time.AllPkt 	+= 1;
+				Pipe->Time.AllByte	+= Pkt->LengthWire;
 			}
 
-			// time bin in comparsion 
-			Pipe->Time.AllPkt 	+= 1;
-			Pipe->Time.AllByte	+= PktHeader->LengthWire;
+			// update stats
+			PCAPOffset 	+= sizeof(FMADPacket_t);
+			PCAPOffset 	+= Pkt->LengthCapture; 
+			TotalPkt	+= 1;
+
+			// write the per filter log files
+			LastTS 		= Pkt->TS;
+			if (LastTS > NextOutputTS)
+			{
+				// print every 60sec
+				NextOutputTS = LastTS + g_OutputTimeNS;
+		
+				// process all pipelines
+				for (int p=0; p < s_PipelinePos; p++)
+				{
+					Pipeline_t* Pipe = s_PipelineList[p];
+					Pipeline_WriteLog(Pipe, LastTS);
+				}
+			}
 		}
 
-		// update stats
-		PCAPOffset 	+= sizeof(PCAPPacket_t);
-		PCAPOffset 	+= PktHeader->LengthCapture; 
-		TotalPkt	+= 1;
-
-		LastTS 		= PacketTS;
-
-		if (LastTS > NextPrintTS)
+		// write processing status 
+		u64 TSC = rdtsc();
+		if (TSC > NextPrintTSC)
 		{
-			// print every 60sec
-			NextPrintTS = LastTS + g_OutputTimeNS;
+			NextPrintTSC = TSC + 3e9; 
 
 			u8 TimeStr[1024];
 			clock_date_t c	= ns2clock(LastTS);
@@ -645,15 +788,22 @@ int Parse_Start(void)
 
 			double dT = (clock_ns() - StartTS) / 1e9;
 			double Bps = (PCAPOffset * 8.0) / dT; 
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps\n", dT / (60*60), TimeStr, PCAPOffset / 1e9, Bps / 1e9);
-
-			// process all pipelines	
-			for (int p=0; p < s_PipelinePos; p++)
-			{
-				Pipeline_t* Pipe = s_PipelineList[p];
-				Pipeline_WriteLog(Pipe, PacketTS);
-			}
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps StreamCat: %6.2f MB Fetch %.2f Send %.2f\n", 
+						dT / (60*60), 
+						TimeStr, 
+						PCAPOffset / 1e9, 
+						Bps / 1e9, 
+						StreamCAT_BytePending / (float)kMB(1), 
+						StreamCAT_CPUFetch,
+						StreamCAT_CPUSend);
 		}
+	}
+
+	// flush pipe with last log
+	for (int p=0; p < s_PipelinePos; p++)
+	{
+		Pipeline_t* Pipe = s_PipelineList[p];
+		Pipeline_Close(Pipe, LastTS);
 	}
 
 	return 0;

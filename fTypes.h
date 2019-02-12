@@ -554,6 +554,7 @@ typedef struct
 
 #define PCAPHEADER_MAGIC_NANO		0xa1b23c4d
 #define PCAPHEADER_MAGIC_USEC		0xa1b2c3d4
+#define PCAPHEADER_MAGIC_FMAD		0x1337bab3
 #define PCAPHEADER_MAJOR			2
 #define PCAPHEADER_MINOR			4
 #define PCAPHEADER_LINK_ETHERNET	1
@@ -581,5 +582,41 @@ typedef struct
 	u32				Link;
 
 } __attribute__((packed)) PCAPHeader_t;
+
+// packet header
+typedef struct FMADPacket_t
+{
+	u64             TS;                     // 64bit nanosecond epoch
+
+	u32             LengthCapture   : 16;   // length captured
+	u32             LengthWire      : 16;   // Length on the wire
+
+	u32             PortNo          :  8;   // Port number
+	u32             Flag            :  8;   // flags
+	u32             pad0            : 16;
+
+} __attribute__((packed)) FMADPacket_t;
+
+// header per packet
+typedef struct FMADHeader_t
+{
+	u16				PktCnt;					// number of packets
+	u16				pad0;
+
+	u32				BytesWire;				// total wire bytes  
+	u32				BytesCapture;			// total capture bytes 
+	u32				Length;					// length of this block in bytes
+
+	u64				TSStart;				// TS of first packet
+	u64				TSEnd;					// TS of last packet 
+
+	// internal performance stats passed downstream
+	u64				BytePending;			// how many bytes pending 
+	u16				CPUActive;				// cpu pct stream_cat is active  
+	u16				CPUFetch;	
+	u16				CPUSend;	
+	u16				pad1;			
+
+} __attribute__((packed)) FMADHeader_t;
 
 #endif
