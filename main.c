@@ -194,6 +194,7 @@ int main(int argc, char* argv[])
 		int status = docall(L, 0, 0);
 		report(L, status);	
 	}
+	fflush(stdout);
 
 	Parse_Start();
 }

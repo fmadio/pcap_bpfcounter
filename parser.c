@@ -797,6 +797,7 @@ int Parse_Start(void)
 						StreamCAT_CPUFetch,
 						StreamCAT_CPUSend);
 			fflush(stderr);
+			fflush(stdout);
 		}
 	}
 
