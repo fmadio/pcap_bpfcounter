@@ -154,6 +154,16 @@ static void lua_register_os(lua_State* L, const char* FnName, lua_CFunction Func
 
 int main(int argc, char* argv[])
 {
+	u8* ConfigFileName = "./config.lua";
+	for (int i=0; i < argc; i++)
+	{
+		if (strcmp(argv[i], "--config") == 0)
+		{
+			ConfigFileName = argv[i+1];
+			i++;
+		}
+	}
+
 	lua_State *L = lua_open();
 	luaL_openlibs(L);
 
@@ -178,9 +188,9 @@ int main(int argc, char* argv[])
 		report(L, status);	
 	}
 
-	printf("Config File\n");
+	printf("Config File [%s]\n", ConfigFileName);
 	{
-		int ret = luaL_loadfile(L, "./config.lua");
+		int ret = luaL_loadfile(L, ConfigFileName); 
 		int status = docall(L, 0, 0);
 		report(L, status);	
 	}

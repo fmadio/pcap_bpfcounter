@@ -796,6 +796,7 @@ int Parse_Start(void)
 						StreamCAT_BytePending / (float)kMB(1), 
 						StreamCAT_CPUFetch,
 						StreamCAT_CPUSend);
+			fflush(stderr);
 		}
 	}
 
