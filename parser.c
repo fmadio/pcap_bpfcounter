@@ -50,35 +50,29 @@
 
 typedef struct
 {
-	u32*			BinPkt;						// histograms for packets that hit the BPF filter
-	u32*			BinByte;
+	u32				BinMax;						// max entries
+	u32				BinCnt;						// max entries
+	u16*			BinListIndex;				// list of time indexs to add 
+	u16*			BinListWire;				// byte count for that index 
+
+	u32*			BinPkt;						// actual histogram 
+	u32*			BinByte;					// only valid in the pipeline stats struct 
 
 	u64				Pkt;						// number of pkts/bytes added in this time slot
 	u64				Byte;
-
-	u64				AllPkt;						// total packets checked (inc BPF miss) 
-	u64				AllByte;					// used to calcuate raio of this BPF flow
-													// to all of the traffic
 
 	u32				RMON1[RMON1_MAX];			// time RMON stats
 
 } PipelineTime_t;
 
-typedef struct
+typedef struct PipelineStats_t
 {
-	// rule definition 
-	u8				Name[256];						// string name of the expression
-
-	// output files
-	u8				OutputFileName[1024];			// full path of output name
-	FILE*			OutputFile;						// file handle to write
-	u64				OutputNS;						// nanos between outputs 
-
-	bool			BPFValid;						// BPF expression compiled sucessfully
-	u8				BPF[1024];
-	u8				BPFCode[16*1024];
+	u64				SeqNo;							// packet block sequence no
+	bool			IsFlush;						// flush pipeline after updating
 
 	u64				LastTS;							// TS of last packet hit
+	u64				AllPkt;							// total packets checked (inc BPF miss) 
+	u64				AllByte;						// used to calcuate raio of this BPF flow
 
 	u64				TotalPkt;						// total packets hit
 	u64				TotalByte;						// total bytes hit 
@@ -89,45 +83,88 @@ typedef struct
 	u64				TCPCnt_ACK;						// total tcp ACK pkts 
 	u64				TCPCnt_PSH;						// total tcp PSH pkts 
 
-	// these fields get cleared every log cycle
-
-	u32				TimeBinMax;						// max bins
-	u64				TimeBinNS;						// time bin in nanos	
 	PipelineTime_t	Time;
+
+	// next in free list
+	struct PipelineStats_t* FreeNext;				// next in free list
+
+	// next in queued list 
+	struct PipelineStats_t* QueueNext;				// next in per pipeline queue
+
+} PipelineStats_t;
+
+typedef struct
+{
+	// rule definition 
+	u8					Name[256];					// string name of the expression
+
+	// output files
+	u8					OutputFileName[1024];		// full path of output name
+	FILE*				OutputFile;					// file handle to write
+	u64					OutputNS;					// nanos between outputs 
+
+	bool				BPFValid;					// BPF expression compiled sucessfully
+	u8					BPF[1024];
+	u8					BPFCode[16*1024];
+
+	u32					TimeBinMax;					// max bins
+	u64					TimeBinNS;					// time bin in nanos	
+
+	u64					StatsSeqNo;					// next stats seq no to update
+	PipelineStats_t		Stats;						// current aggregated stats 
+													// for the pipeline 
+
+	PipelineStats_t*	QueueHead[32];				// one queue head per cpu 
+	PipelineStats_t*	QueueTail[32];				// one queue head per cpu 
 
 } Pipeline_t;
 
-typedef struct PacketBuffer_t
+typedef struct PacketBlock_t
 {
-	u32						PktCnt;				// number of packets in this buffer
-	u32						ByteWire;			// total wire bytes 
-	u32						ByteCapture;		// total captured bytes 
+	u64						SeqNo;					// packet block seq no
 
-	u64						TSFirst;			// first Pkt TS
-	u64						TSLast;				// last Pkt TS
+	u32						PktCnt;					// number of packets in this buffer
+	u32						ByteWire;				// total wire bytes 
+	u32						ByteCapture;			// total captured bytes 
 
-	u32						BufferMax;			// max size
-	u8*						Buffer;				// memory buffer
-	u32						BufferLength;		// length of valid data in buffer
+	u64						TSFirst;				// first Pkt TS
+	u64						TSLast;					// last Pkt TS
 
-} PacketBuffer_t;
+	u32						BufferMax;				// max size
+	u8*						Buffer;					// memory buffer
+	u32						BufferLength;			// length of valid data in buffer
 
+	bool					IsOutput;				// chunk cross the output boundary
+	u32						OutputSeqNo;			// ensure it writes in-order
+	u64						OutputTS;				// TS when to flush 
 
+	struct PacketBlock_t*	FreeNext;				// next in free list
 
-extern u64				g_OutputTimeNS;				// time between outputs
+} PacketBlock_t;
+
+extern u64				g_OutputTimeNS;					// time between outputs
 
 static u32				s_PipelinePos = 0;
 static u32				s_PipelineMax = 16*1024;
 static Pipeline_t* 		s_PipelineList[16*1024];	
 
+static PacketBlock_t*	s_PacketBlockFree 	= NULL;		// free packet buffer list
+
+static PipelineStats_t*	s_PipeStatsFree		= NULL;		// free stats list
+static u32				s_PipeStatsListMax	= 128;		// number of entries
+
+u64						g_TotalMemory		= 0;		// total memory allocated
+static u32				s_CPUActive			= 1;		// number of worker cpus active
+
 //-------------------------------------------------------------------------------------------------
+
 static inline u32 Length2RMON1(const u32 Length)
 {
-	if (Length < 64) return RMON1_RUNT;
-	if (Length == 64) return RMON1_64;
-	if (Length <= 127) return RMON1_64_127;
-	if (Length <= 255) return RMON1_128_255;
-	if (Length <= 511) return RMON1_256_511;
+	if (Length <    64) return RMON1_RUNT;
+	if (Length ==   64) return RMON1_64;
+	if (Length <=  127) return RMON1_64_127;
+	if (Length <=  255) return RMON1_128_255;
+	if (Length <=  511) return RMON1_256_511;
 	if (Length <= 1023) return RMON1_512_1023;
 	if (Length <= 1518) return RMON1_1024_1518;
 	if (Length <= 2047) return RMON1_1519_2047;
@@ -143,6 +180,7 @@ int lpipe_create(lua_State* L)
 {
 	Pipeline_t*		Pipe = (Pipeline_t*)malloc( sizeof(Pipeline_t) );
 	memset(Pipe, 0, sizeof(Pipeline_t));
+	g_TotalMemory += sizeof(Pipeline_t);
 
 	u32 Index 				= s_PipelinePos++;	
 	s_PipelineList[Index]	= Pipe;
@@ -152,16 +190,20 @@ int lpipe_create(lua_State* L)
 
 	printf("[%-40s] create a pipeline\n", Pipe->Name);
 
-	// default bandwidth stats
-	Pipe->TimeBinNS			= 1e6;
-	Pipe->OutputNS			= g_OutputTimeNS;
-	Pipe->TimeBinMax		= Pipe->OutputNS / Pipe->TimeBinNS;
+	Pipe->OutputNS		= g_OutputTimeNS;
 
-	Pipe->Time.BinPkt		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
-	Pipe->Time.BinByte		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
+	Pipe->TimeBinNS		= 1e6;
+	Pipe->TimeBinMax	= Pipe->OutputNS / Pipe->TimeBinNS;
 
-	memset(Pipe->Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax);
-	memset(Pipe->Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax);
+	// stats histogram 
+	Pipe->Stats.Time.BinPkt		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
+	Pipe->Stats.Time.BinByte	= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
+
+	memset(Pipe->Stats.Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax);
+	memset(Pipe->Stats.Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax);
+
+	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
+	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
 
 	lua_pushnumber(L, Index);
 
@@ -224,10 +266,18 @@ int lpipe_burst(lua_State* L)
 		lua_pushnumber(L, 1);
 		return 0;
 	}
+	if (TimeBucketNS < 100e3)
+	{
+		printf("[%-40s] ERROR: set TimeBucket %lli nsec too low\n", Pipe->Name, TimeBucketNS);
+		lua_pushnumber(L, 1);
+		return 0;
+	}
 
 	Pipe->TimeBinNS 	= TimeBucketNS;
 	Pipe->TimeBinMax	= Pipe->OutputNS / Pipe->TimeBinNS;
 
+	// reallocate the time bin
+	PipelineStats_t* PipeStats	= &Pipe->Stats; 
 	if (Pipe->TimeBinMax > TIME_BIN_MAX)
 	{
 		printf("[%-40s] ERROR: set TimeBucket %lli nsec too small for current config (%i/%i)\n", Pipe->Name, Pipe->TimeBinNS, Pipe->TimeBinMax, TIME_BIN_MAX);
@@ -236,20 +286,23 @@ int lpipe_burst(lua_State* L)
 	}
 
 	// reallocate bins
-	free(Pipe->Time.BinPkt);
-	free(Pipe->Time.BinByte);
+	free(PipeStats->Time.BinPkt);
+	free(PipeStats->Time.BinByte);
 
-	Pipe->Time.BinPkt		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
-	Pipe->Time.BinByte		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
+	PipeStats->Time.BinPkt		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
+	PipeStats->Time.BinByte		= (u32*)malloc( sizeof(u32) * Pipe->TimeBinMax);
 
-	assert(Pipe->Time.BinPkt != NULL);
-	assert(Pipe->Time.BinByte != NULL);
+	assert(PipeStats->Time.BinPkt != NULL);
+	assert(PipeStats->Time.BinByte != NULL);
 
-	memset(Pipe->Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax);
-	memset(Pipe->Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax);
+	memset(PipeStats->Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax);
+	memset(PipeStats->Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax);
+
+	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
+	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
 
 	// new microburst time bin set 
-	printf("[%-40s] set TimeBucket %lli nsec\n", Pipe->Name, Pipe->TimeBinNS);
+	printf("[%-40s] set TimeBucket %lli nsec Memory:%.2fMB\n", Pipe->Name, Pipe->TimeBinNS, g_TotalMemory/(float)kMB(1) );
 
 	return 0;
 }
@@ -335,6 +388,51 @@ int lpipe_output_time(lua_State* L)
 }
 
 //-------------------------------------------------------------------------------------------------
+// pipeline stats 
+static PipelineStats_t* PipeStats_Alloc(u64 SeqNo)
+{
+	PipelineStats_t* Stats = s_PipeStatsFree;
+	assert(Stats != NULL);
+
+	Stats->SeqNo = SeqNo;
+
+	s_PipeStatsFree = Stats->FreeNext;
+
+	return Stats;
+}
+
+//-------------------------------------------------------------------------------------------------
+// pipeline stats free 
+static void PipeStats_Free(PipelineStats_t* PipeStats)
+{
+	PipeStats->SeqNo	= 0;
+	PipeStats->IsFlush	= false;
+
+	PipeStats->Time.BinCnt = 0;
+
+	PipeStats->Time.Pkt = 0;
+	PipeStats->Time.Byte = 0;
+	PipeStats->AllPkt = 0;
+	PipeStats->AllByte = 0;
+	memset(&PipeStats->Time.RMON1, 0, sizeof(PipeStats->Time.RMON1) );
+
+	// clear tcp flag stats 
+	PipeStats->TCPCnt_FIN 	= 0;
+	PipeStats->TCPCnt_SYN 	= 0;
+	PipeStats->TCPCnt_RST	= 0;
+	PipeStats->TCPCnt_ACK 	= 0;
+	PipeStats->TCPCnt_PSH 	= 0;
+
+	// reset delta counters
+	PipeStats->TotalPkt 	= 0;
+	PipeStats->TotalByte 	= 0;
+
+	// add to free stack
+	PipeStats->FreeNext = s_PipeStatsFree;
+	s_PipeStatsFree	= PipeStats;
+}
+
+//-------------------------------------------------------------------------------------------------
 
 void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 {
@@ -354,33 +452,33 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 
 	for (int i=0; i < Pipe->TimeBinMax; i++)
 	{
-		if (BytesMax < Pipe->Time.BinByte[i]) 
+		if (BytesMax < Pipe->Stats.Time.BinByte[i]) 
 		{
-			BytesMax = Pipe->Time.BinByte[i]; 
+			BytesMax = Pipe->Stats.Time.BinByte[i]; 
 		}
 
-		if (PktMax < Pipe->Time.BinPkt[i]) 
+		if (PktMax < Pipe->Stats.Time.BinPkt[i]) 
 		{
-			PktMax = Pipe->Time.BinPkt[i]; 
+			PktMax = Pipe->Stats.Time.BinPkt[i]; 
 		}
 
 		// calcualte mean / stdev 
 		ByteS0	+= 1; 
-		ByteS1 	+= Pipe->Time.BinByte[i];
-		ByteS2 	+= Pipe->Time.BinByte[i] * Pipe->Time.BinByte[i];
+		ByteS1 	+= Pipe->Stats.Time.BinByte[i];
+		ByteS2 	+= Pipe->Stats.Time.BinByte[i] * Pipe->Stats.Time.BinByte[i];
 
 		PktS0	+= 1; 
-		PktS1 	+= Pipe->Time.BinPkt[i];
-		PktS2 	+= Pipe->Time.BinPkt[i] * Pipe->Time.BinPkt[i];
+		PktS1 	+= Pipe->Stats.Time.BinPkt[i];
+		PktS2 	+= Pipe->Stats.Time.BinPkt[i] * Pipe->Stats.Time.BinPkt[i];
 	}
 
 	u64 BpsMax  =  1e9 * (8.0 * (float)BytesMax) / (float)Pipe->TimeBinNS;
-	u64 BpsMean = (1e9 * 8.0 * ByteS1) / g_OutputTimeNS; 
+	u64 BpsMean = (1e9 *  8.0 * ByteS1) / g_OutputTimeNS;
 
 	u64 PpsMax  =  1e9 * ((float)PktMax) / (float)Pipe->TimeBinNS;
-	u64 PpsMean = (1e9 * PktS1) / g_OutputTimeNS; 
+	u64 PpsMean = (1e9 * PktS1) / g_OutputTimeNS;
 
-	float BytePct = Pipe->Time.Byte * inverse(Pipe->Time.AllByte); 
+	float BytePct = Pipe->Stats.TotalByte * inverse(Pipe->Stats.AllByte);
 
 	u8 DateTime[128];
 	ns2str(DateTime, LastTS);
@@ -388,8 +486,8 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	fprintf(Pipe->OutputFile, "%32s, %20lli, %20lli, %20lli, %20.3f, %20.3f, %20.6f, %20lli, %20lli, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i\n",
 			DateTime,	
 			LastTS,
-			Pipe->TotalPkt,
-			Pipe->TotalByte,
+			Pipe->Stats.TotalPkt,
+			Pipe->Stats.TotalByte,
 			BpsMax/1e6,	
 			BpsMean/1e6,
 			BytePct,
@@ -397,53 +495,388 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 			PpsMax,	
 			PpsMean,
 		
-			Pipe->Time.RMON1[RMON1_RUNT],
-			Pipe->Time.RMON1[RMON1_64],
-			Pipe->Time.RMON1[RMON1_64_127],
-			Pipe->Time.RMON1[RMON1_128_255],
-			Pipe->Time.RMON1[RMON1_256_511],
-			Pipe->Time.RMON1[RMON1_512_1023],
-			Pipe->Time.RMON1[RMON1_1024_1518],
-			Pipe->Time.RMON1[RMON1_1024_1518] + Pipe->Time.RMON1[RMON1_1519_2047],
-			Pipe->Time.RMON1[RMON1_2048_4095],
-			Pipe->Time.RMON1[RMON1_4096_8191],
-			Pipe->Time.RMON1[RMON1_8192],
+			Pipe->Stats.Time.RMON1[RMON1_RUNT],
+			Pipe->Stats.Time.RMON1[RMON1_64],
+			Pipe->Stats.Time.RMON1[RMON1_64_127],
+			Pipe->Stats.Time.RMON1[RMON1_128_255],
+			Pipe->Stats.Time.RMON1[RMON1_256_511],
+			Pipe->Stats.Time.RMON1[RMON1_512_1023],
+			Pipe->Stats.Time.RMON1[RMON1_1024_1518],
+			Pipe->Stats.Time.RMON1[RMON1_1024_1518] + Pipe->Stats.Time.RMON1[RMON1_1519_2047],
+			Pipe->Stats.Time.RMON1[RMON1_2048_4095],
+			Pipe->Stats.Time.RMON1[RMON1_4096_8191],
+			Pipe->Stats.Time.RMON1[RMON1_8192],
 
-			Pipe->TCPCnt_FIN,
-			Pipe->TCPCnt_SYN,
-			Pipe->TCPCnt_RST,
-			Pipe->TCPCnt_ACK,
-			Pipe->TCPCnt_PSH
+			Pipe->Stats.TCPCnt_FIN,
+			Pipe->Stats.TCPCnt_SYN,
+			Pipe->Stats.TCPCnt_RST,
+			Pipe->Stats.TCPCnt_ACK,
+			Pipe->Stats.TCPCnt_PSH
 	);
 
 	fflush(Pipe->OutputFile);
 
 	// reset the time buckets
-	memset(Pipe->Time.BinPkt, 0, sizeof(u32) * Pipe->TimeBinMax );
-	memset(Pipe->Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax );
-	Pipe->Time.Pkt = 0;
-	Pipe->Time.Byte = 0;
-	Pipe->Time.AllPkt = 0;
-	Pipe->Time.AllByte = 0;
-	memset(&Pipe->Time.RMON1, 0, sizeof(Pipe->Time.RMON1) );
+	memset(Pipe->Stats.Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax );
+	memset(Pipe->Stats.Time.BinByte, 0, sizeof(u32) * Pipe->TimeBinMax );
 
-	// clear tcp flag stats 
-	Pipe->TCPCnt_FIN = 0;
-	Pipe->TCPCnt_SYN = 0;
-	Pipe->TCPCnt_RST = 0;
-	Pipe->TCPCnt_ACK = 0;
-	Pipe->TCPCnt_PSH = 0;
+	Pipe->Stats.Time.Pkt = 0;
+	Pipe->Stats.Time.Byte = 0;
+	memset(&Pipe->Stats.Time.RMON1, 0, sizeof(Pipe->Stats.Time.RMON1) );
 }
 
 //-------------------------------------------------------------------------------------------------
 // close 
 void Pipeline_Close(Pipeline_t* Pipe, u64 LastTS)
 {
-	// flush last log entry
-	Pipeline_WriteLog(Pipe, LastTS);
-
 	fclose(Pipe->OutputFile);
 	Pipe->OutputFile = NULL;
+}
+
+//-------------------------------------------------------------------------------------------------
+// pipeline aggregate any stats generated
+static void Pipeline_StatsAggregate(Pipeline_t* P)
+{
+	for (int j=0; j < 16; j++)
+	{
+		// free anything
+		u32 UpdateCnt = 0;
+		for (int cpu=0; cpu < s_CPUActive; cpu++)
+		{
+			PipelineStats_t* Stats = P->QueueHead[cpu];
+			if (Stats == NULL) continue;
+
+			// next seq no ?
+			if (Stats->SeqNo != P->StatsSeqNo)
+			{
+				continue;
+			}
+
+			// decrement ptr 
+			P->QueueHead[cpu] = Stats->QueueNext;
+			if (P->QueueHead[cpu] == NULL) P->QueueTail[cpu] = NULL; 
+
+			// update stats
+			P->Stats.TotalPkt		+= Stats->TotalPkt;
+			P->Stats.TotalByte		+= Stats->TotalByte;
+			
+			P->Stats.AllPkt			+= Stats->AllPkt;
+			P->Stats.AllByte		+= Stats->AllByte;
+
+			// update rmon stats
+			P->Stats.Time.RMON1[RMON1_RUNT] 		+= Stats->Time.RMON1[RMON1_RUNT];
+			P->Stats.Time.RMON1[RMON1_64] 			+= Stats->Time.RMON1[RMON1_64];
+			P->Stats.Time.RMON1[RMON1_64_127]		+= Stats->Time.RMON1[RMON1_64_127];
+			P->Stats.Time.RMON1[RMON1_128_255]		+= Stats->Time.RMON1[RMON1_128_255];
+			P->Stats.Time.RMON1[RMON1_256_511]		+= Stats->Time.RMON1[RMON1_256_511];
+			P->Stats.Time.RMON1[RMON1_512_1023]		+= Stats->Time.RMON1[RMON1_512_1023];
+			P->Stats.Time.RMON1[RMON1_1024_1518]	+= Stats->Time.RMON1[RMON1_1024_1518];
+			P->Stats.Time.RMON1[RMON1_1519_2047]	+= Stats->Time.RMON1[RMON1_1519_2047];
+			P->Stats.Time.RMON1[RMON1_2048_4095]	+= Stats->Time.RMON1[RMON1_2048_4095];
+			P->Stats.Time.RMON1[RMON1_4096_8191]	+= Stats->Time.RMON1[RMON1_4096_8191];
+
+			// tcp stats
+			P->Stats.TCPCnt_FIN						+= Stats->TCPCnt_FIN;
+			P->Stats.TCPCnt_SYN						+= Stats->TCPCnt_SYN;
+			P->Stats.TCPCnt_RST						+= Stats->TCPCnt_RST;
+			P->Stats.TCPCnt_ACK						+= Stats->TCPCnt_ACK;
+			P->Stats.TCPCnt_PSH						+= Stats->TCPCnt_PSH;
+
+			// update histogram
+			for (int i=0; i < Stats->Time.BinCnt; i++)
+			{
+				u32 Index 	  = Stats->Time.BinListIndex[i];
+				u32 BytesWire = Stats->Time.BinListWire[i];
+
+				P->Stats.Time.BinPkt[Index]  += 1;
+				P->Stats.Time.BinByte[Index] += BytesWire;
+			}
+
+			// write log 
+			if (Stats->IsFlush)
+			{
+				Pipeline_WriteLog(P, Stats->LastTS);
+			}
+
+			// release back to pool
+			PipeStats_Free(Stats);
+
+			// next seq no
+			P->StatsSeqNo++;
+
+			// activity counter 
+			UpdateCnt++;	
+		}
+
+		// nothing more to update?
+		if (UpdateCnt == 0) break;
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+
+static PacketBlock_t* PktBlock_Allocate(void)
+{
+	PacketBlock_t* PktBlock = s_PacketBlockFree;
+	assert(PktBlock != NULL);
+
+	s_PacketBlockFree		= PktBlock->FreeNext;
+
+	return PktBlock; 
+}
+
+//-------------------------------------------------------------------------------------------------
+
+void PktBlock_Free(PacketBlock_t* PktBlock)
+{
+	// reset packet buffer
+	PktBlock->PktCnt		= 0;
+	PktBlock->ByteWire		= 0;
+	PktBlock->ByteCapture	= 0;
+
+	PktBlock->TSFirst		= -1;
+	PktBlock->TSLast		= 0;
+
+	PktBlock->BufferLength	= 0;
+
+	PktBlock->FreeNext 		= s_PacketBlockFree;
+
+	s_PacketBlockFree 		= PktBlock;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+static void Pipeline_QueueStats(Pipeline_t* Pipe, PipelineStats_t* Stats, u32 CPUID)
+{
+	Stats->QueueNext = NULL;
+
+	// first entry
+	if (Pipe->QueueTail[CPUID] == NULL)
+	{
+		Pipe->QueueHead[CPUID] = Stats;
+		Pipe->QueueTail[CPUID] = Stats;
+	}
+	// add to tail
+	else
+	{
+		Pipe->QueueTail[CPUID]->QueueNext 	= Stats;
+		Pipe->QueueTail[CPUID] 				= Stats;
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+// process BPF filters on the block
+static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
+{
+	// allocate pipeline stats 
+	u32 TotalPkt		= 0;
+	u32 TotalPktHit 	= 0;
+	u32 TotalPktUnique 	= 0;
+
+	// create stats block
+
+	PipelineStats_t*	StatsList[128];
+
+	for (int p=0; p < s_PipelinePos; p++)
+	{
+		StatsList[p] = PipeStats_Alloc(PktBlock->SeqNo); 
+	}
+
+	u64 LastTS			= 0;
+
+	// process a block
+	u32 Offset = 0;
+	for (int i=0; i < PktBlock->PktCnt; i++)
+	{
+		FMADPacket_t* Pkt 	= (FMADPacket_t*)(PktBlock->Buffer + Offset);	
+		Offset 				+= sizeof(FMADPacket_t);
+		Offset 				+= Pkt->LengthCapture; 
+
+		// pcap header for BPF parser
+		struct pcap_pkthdr hdr;
+		hdr.ts.tv_sec		= Pkt->TS / (u64)1e9;
+		hdr.ts.tv_usec		= Pkt->TS % (u64)1e9;
+		hdr.caplen			= Pkt->LengthCapture; 
+		hdr.len				= Pkt->LengthWire;
+
+		u8* PacketPayload	= (u8*)(Pkt + 1);
+
+		// process all pipelines	
+		for (int p=0; p < s_PipelinePos; p++)
+		{
+			Pipeline_t* Pipe 			= s_PipelineList[p];
+			PipelineStats_t* PipeStats 	= StatsList[p]; 
+
+			// time rounted within the update rate 
+			u64 TimeSub = Pkt->TS % Pipe->OutputNS; 
+
+			// time bin for this packet
+			u64 TimeIndex = TimeSub / Pipe->TimeBinNS;
+
+			// sanitize index
+			if (TimeIndex >= Pipe->TimeBinMax)
+			{
+				printf("[%-40s] time index out of range %i\n", Pipe->Name, TimeIndex);
+				TimeIndex = 0;
+			}
+
+			// run BPF expression
+			int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
+			if (Result != 0)
+			{
+				// BPF got a hit
+				PipeStats->TotalPkt		+= 1;
+				PipeStats->TotalByte	+= Pkt->LengthWire;
+
+				PipeStats->LastTS = Pkt->TS;
+
+				// update Bins
+				PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
+				PipeStats->Time.BinListWire  [PipeStats->Time.BinCnt] = Pkt->LengthWire;
+				PipeStats->Time.BinCnt++;
+
+				// total stats
+				PipeStats->Time.Pkt	+= 1;
+				PipeStats->Time.Byte	+= Pkt->LengthWire;
+
+				// update RMON stats
+				u32 RMONIndex = Length2RMON1(Pkt->LengthWire);
+				PipeStats->Time.RMON1[RMONIndex]++;
+
+				// per protocol stats 
+				{
+					fEther_t* Ether = (fEther_t*)(Pkt + 1);	
+					u8* Payload 	= (u8*)(Ether + 1);
+					u16 EtherProto 	= swap16(Ether->Proto);
+
+					// VLAN decoder
+					if (EtherProto == ETHER_PROTO_VLAN)
+					{
+						VLANTag_t* Header 	= (VLANTag_t*)(Ether+1);
+						u16* Proto 			= (u16*)(Header + 1);
+
+						// update to the acutal proto / ipv4 header
+						EtherProto 			= swap16(Proto[0]);
+						Payload 			= (u8*)(Proto + 1);
+
+						// VNTag unpack
+						if (EtherProto == ETHER_PROTO_VNTAG)
+						{
+							VNTag_t* Header = (VNTag_t*)(Proto+1);
+							Proto 			= (u16*)(Header + 1);
+
+							// update to the acutal proto / ipv4 header
+							EtherProto 		= swap16(Proto[0]);
+							Payload 		= (u8*)(Proto + 1);
+						}
+
+						// is it double tagged ? 
+						if (EtherProto == ETHER_PROTO_VLAN)
+						{
+							Header 			= (VLANTag_t*)(Proto+1);
+							Proto 			= (u16*)(Header + 1);
+
+							// update to the acutal proto / ipv4 header
+							EtherProto 		= swap16(Proto[0]);
+							Payload 		= (u8*)(Proto + 1);
+						}
+					}
+
+					// MPLS decoder	
+					if (EtherProto == ETHER_PROTO_MPLS)
+					{
+						MPLSHeader_t* MPLS = (MPLSHeader_t*)(Payload);
+
+						// for now only process outer tag
+						// assume there is a sane limint on the encapsulation count
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+						if (!MPLS->BOS)
+						{
+							MPLS += 1;
+						}
+
+						// update to next header
+						if (MPLS->BOS)
+						{
+							EtherProto = ETHER_PROTO_IPV4;
+							Payload = (u8*)(MPLS + 1);
+						}
+					}
+
+					// ipv4 info
+					if (EtherProto == ETHER_PROTO_IPV4)
+					{
+						IP4Header_t* IP4 = (IP4Header_t*)Payload;
+
+						// IPv4 protocol decoders 
+						u32 IPOffset = (IP4->Version & 0x0f)*4; 
+						switch (IP4->Proto)
+						{
+						case IPv4_PROTO_TCP:
+							{
+								TCPHeader_t* TCP = (TCPHeader_t*)(Payload + IPOffset);
+
+								PipeStats->TCPCnt_FIN  += TCP_FLAG_FIN(TCP->Flags);
+								PipeStats->TCPCnt_SYN  += TCP_FLAG_SYN(TCP->Flags);
+								PipeStats->TCPCnt_RST  += TCP_FLAG_RST(TCP->Flags);
+								PipeStats->TCPCnt_ACK  += TCP_FLAG_ACK(TCP->Flags);
+								PipeStats->TCPCnt_PSH  += TCP_FLAG_PSH(TCP->Flags);
+							}
+							break;
+						case IPv4_PROTO_UDP:
+							{
+								UDPHeader_t* UDP = (UDPHeader_t*)(Payload + IPOffset);
+
+							}
+							break;
+
+						}
+					}
+				}
+				TotalPktHit++;
+			}
+			TotalPkt++;
+
+			// time bin in comparsion 
+			PipeStats->AllPkt 	+= 1;
+			PipeStats->AllByte	+= Pkt->LengthWire;
+		}
+
+		LastTS 		= Pkt->TS;
+
+		// write the per filter log files
+		if (PktBlock->IsOutput && (LastTS > PktBlock->OutputTS))
+		{
+			// kick once 
+			PktBlock->IsOutput = false; 
+
+			// flag for flushing 
+			for (int p=0; p < s_PipelinePos; p++)
+			{
+				StatsList[p]->IsFlush = true;
+
+				// queue stats 
+				Pipeline_QueueStats(s_PipelineList[p], StatsList[p], CPUID);
+
+				// allocate new stats 
+				StatsList[p] = PipeStats_Alloc(PktBlock->SeqNo+1); 
+			}
+		}
+	}
+
+	// queue 
+	for (int p=0; p < s_PipelinePos; p++)
+	{
+		// queue stats 
+		Pipeline_QueueStats(s_PipelineList[p], StatsList[p], CPUID);
+	}
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -452,7 +885,6 @@ int Parse_Start(void)
 {
 	u64 StartTS					= clock_ns();
 	u64 PCAPOffset				= 0;
-	u64 TotalPkt				= 0;
 
 	FILE* FIn = stdin; 
 	assert(FIn != NULL);
@@ -482,30 +914,67 @@ int Parse_Start(void)
 	u64 NextOutputTS			= 0;
 	u64 NextPrintTSC			= 0;
 
-	// create packet buffer
-	PacketBuffer_t*	PktBlock	= (PacketBuffer_t*)malloc(sizeof(PacketBuffer_t));
-	memset(PktBlock, 0, sizeof(PacketBuffer_t));
+	// allocate packet blocks
+	for (int i=0; i < 8; i++)
+	{
+		PacketBlock_t*	PktBlock	= (PacketBlock_t*)malloc(sizeof(PacketBlock_t));
+		memset(PktBlock, 0, sizeof(PacketBlock_t));
+		g_TotalMemory 			+= sizeof(PacketBlock_t);
 
-	PktBlock->BufferMax			= kKB(256);
-	PktBlock->Buffer			= malloc( PktBlock->BufferMax ); 
-	assert(PktBlock->Buffer != 0);
+		PktBlock->BufferMax		= kKB(256);
+		PktBlock->Buffer		= malloc( PktBlock->BufferMax ); 
+		assert(PktBlock->Buffer != 0);
+		g_TotalMemory 			+= kKB(256); 
+
+		PktBlock_Free(PktBlock);
+	}
+	fprintf(stderr, "PacketBlock TotalMemory: %.2f MB\n", g_TotalMemory / (float)kMB(1) );
+
+	// allocate stats
+	u32 TimeBinMax = g_OutputTimeNS / 100e3;
+	fprintf(stderr, "Max Microburst Time resolution: %.2f Sec %i\n", g_OutputTimeNS / 1e9, TimeBinMax); 
+	for (int i=0; i < s_PipeStatsListMax; i++)
+	{
+		PipelineStats_t* Stats 	= (PipelineStats_t*)malloc( sizeof(PipelineStats_t) );
+		memset(Stats, 0, sizeof(PipelineStats_t));
+		g_TotalMemory 			+= sizeof(PipelineStats_t);
+
+		// allocate up to 100usec microburst level
+		// each pipe can be configured differently but 100usec is the smallest resolution 
+		Stats->Time.BinMax			= 4096;	
+		Stats->Time.BinListIndex	= (u16*)malloc( sizeof(u16) * Stats->Time.BinMax);
+		Stats->Time.BinListWire		= (u16*)malloc( sizeof(u16) * Stats->Time.BinMax);
+
+		assert(Stats->Time.BinListIndex != NULL);
+		assert(Stats->Time.BinListWire  != NULL);
+
+		memset(Stats->Time.BinListIndex,  	0, sizeof(u16) * Stats->Time.BinMax);
+		memset(Stats->Time.BinListWire, 	0, sizeof(u16) * Stats->Time.BinMax);
+
+		g_TotalMemory += sizeof(u16) * Stats->Time.BinMax;
+		g_TotalMemory += sizeof(u16) * Stats->Time.BinMax;
+
+		// add to free queue
+		PipeStats_Free(Stats);	
+		fprintf(stderr, "PipeStats TotalMemory: %.2f MB\n", g_TotalMemory / (float)kMB(1) );
+	}
 
 	u64   StreamCAT_BytePending	= 0;
 	float StreamCAT_CPUActive	= 0;
 	float StreamCAT_CPUFetch	= 0;
 	float StreamCAT_CPUSend		= 0;
 
+	u64 TotalPktUnique			= 0;		// total number of unique packets
+	u64 TotalPkt				= 0;		// total number of packets processed
+	u64 TotalPktHit				= 0;		// total number of packets that hit a BPF filter
+
+	u32 StatsIndex				= 0;		// current stats index
+	u64 SeqNo					= 0;		// pkt block sequence number. 
+
 	while (!feof(FIn))
 	{
-		// reset packet buffer
-		PktBlock->PktCnt		= 0;
-		PktBlock->ByteWire		= 0;
-		PktBlock->ByteCapture	= 0;
-
-		PktBlock->TSFirst		= -1;
-		PktBlock->TSLast		= 0;
-
-		PktBlock->BufferLength	= 0;
+		// allocate packet block 
+		PacketBlock_t* PktBlock = PktBlock_Allocate();
 
 		// old style pcap
 		if (IsPCAP)
@@ -594,186 +1063,47 @@ int Parse_Start(void)
 			StreamCAT_CPUSend     = Header.CPUSend / (float)0x10000;
 		}
 
-		// process a block
-		u32 Offset = 0;
-		for (int i=0; i < PktBlock->PktCnt; i++)
+		// update stats
+		PCAPOffset 		+= PktBlock->BufferLength; 
+		TotalPktUnique	+= PktBlock->PktCnt;
+
+		PktBlock->SeqNo	= SeqNo++;
+
+		// first timestamp
+		if (NextOutputTS == 0)
 		{
-			FMADPacket_t* Pkt = (FMADPacket_t*)(PktBlock->Buffer + Offset);	
-			Offset 			+= sizeof(FMADPacket_t);
-			Offset 			+= Pkt->LengthCapture; 
+			NextOutputTS 	= (u64)(PktBlock->TSFirst / g_OutputTimeNS);
+			NextOutputTS 	+= 1; 											// output at next boundary
+			NextOutputTS 	*= g_OutputTimeNS;
+		}
 
-			// pcap header for BPF parser
-			struct pcap_pkthdr hdr;
-			hdr.ts.tv_sec	= Pkt->TS / (u64)1e9;
-			hdr.ts.tv_usec	= Pkt->TS % (u64)1e9;
-			hdr.caplen		= Pkt->LengthCapture; 
-			hdr.len			= Pkt->LengthWire;
+		// is this an output block
+		PktBlock->IsOutput	= false;
+		if (PktBlock->TSLast > NextOutputTS)
+		{
+			PktBlock->IsOutput	= true;
+			PktBlock->OutputTS 	= NextOutputTS;
 
-			u8* PacketPayload	= (u8*)(Pkt + 1);
+			// print every 60sec
+			NextOutputTS += g_OutputTimeNS;
 
-			// process all pipelines	
-			for (int p=0; p < s_PipelinePos; p++)
-			{
-				Pipeline_t* Pipe = s_PipelineList[p];
+			// add seq gap for split packet block
+			SeqNo++;
+		}
 
-				// time rounted within the update rate 
-				u64 TimeSub = Pkt->TS % Pipe->OutputNS; 
+		// update last known TS 
+		if (PktBlock->PktCnt > 0) LastTS = PktBlock->TSLast;
 
-				// time bin for this packet
-				u64 TimeIndex = TimeSub / Pipe->TimeBinNS;
+		// run bpf filters on the block 
+		PktBlock_Process(0, PktBlock);
 
-				// sanitize index
-				if (TimeIndex >= Pipe->TimeBinMax)
-				{
-					printf("[%-40s] time index out of range %i\n", Pipe->Name, TimeIndex);
-					TimeIndex = 0;
-				}
+		// free the block
+		PktBlock_Free(PktBlock);
 
-				// run BPF expression
-				int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
-				if (Result != 0)
-				{
-					// BPF got a hit
-					Pipe->TotalPkt	+= 1;
-					Pipe->TotalByte	+= Pkt->LengthWire;
-
-					Pipe->LastTS = Pkt->TS;
-
-					// update Bins
-					Pipe->Time.BinPkt [TimeIndex] += 1;
-					Pipe->Time.BinByte[TimeIndex] += Pkt->LengthWire;
-
-					// total stats
-					Pipe->Time.Pkt	+= 1;
-					Pipe->Time.Byte	+= Pkt->LengthWire;
-
-					// update RMON stats
-					u32 RMONIndex = Length2RMON1(Pkt->LengthWire);
-					Pipe->Time.RMON1[RMONIndex]++;
-
-					// per protocol stats 
-					{
-						fEther_t* Ether = (fEther_t*)(Pkt + 1);	
-						u8* Payload 	= (u8*)(Ether + 1);
-						u16 EtherProto 	= swap16(Ether->Proto);
-
-						// VLAN decoder
-						if (EtherProto == ETHER_PROTO_VLAN)
-						{
-							VLANTag_t* Header 	= (VLANTag_t*)(Ether+1);
-							u16* Proto 			= (u16*)(Header + 1);
-
-							// update to the acutal proto / ipv4 header
-							EtherProto 			= swap16(Proto[0]);
-							Payload 			= (u8*)(Proto + 1);
-
-							// VNTag unpack
-							if (EtherProto == ETHER_PROTO_VNTAG)
-							{
-								VNTag_t* Header = (VNTag_t*)(Proto+1);
-								Proto 			= (u16*)(Header + 1);
-
-								// update to the acutal proto / ipv4 header
-								EtherProto 		= swap16(Proto[0]);
-								Payload 		= (u8*)(Proto + 1);
-							}
-
-							// is it double tagged ? 
-							if (EtherProto == ETHER_PROTO_VLAN)
-							{
-								Header 			= (VLANTag_t*)(Proto+1);
-								Proto 			= (u16*)(Header + 1);
-
-								// update to the acutal proto / ipv4 header
-								EtherProto 		= swap16(Proto[0]);
-								Payload 		= (u8*)(Proto + 1);
-							}
-						}
-
-						// MPLS decoder	
-						if (EtherProto == ETHER_PROTO_MPLS)
-						{
-							MPLSHeader_t* MPLS = (MPLSHeader_t*)(Payload);
-
-							// for now only process outer tag
-							// assume there is a sane limint on the encapsulation count
-							if (!MPLS->BOS)
-							{
-								MPLS += 1;
-							}
-							if (!MPLS->BOS)
-							{
-								MPLS += 1;
-							}
-							if (!MPLS->BOS)
-							{
-								MPLS += 1;
-							}
-
-							// update to next header
-							if (MPLS->BOS)
-							{
-								EtherProto = ETHER_PROTO_IPV4;
-								Payload = (u8*)(MPLS + 1);
-							}
-						}
-
-						// ipv4 info
-						if (EtherProto == ETHER_PROTO_IPV4)
-						{
-							IP4Header_t* IP4 = (IP4Header_t*)Payload;
-
-							// IPv4 protocol decoders 
-							u32 IPOffset = (IP4->Version & 0x0f)*4; 
-							switch (IP4->Proto)
-							{
-							case IPv4_PROTO_TCP:
-								{
-									TCPHeader_t* TCP = (TCPHeader_t*)(Payload + IPOffset);
-
-									Pipe->TCPCnt_FIN  += TCP_FLAG_FIN(TCP->Flags);
-									Pipe->TCPCnt_SYN  += TCP_FLAG_SYN(TCP->Flags);
-									Pipe->TCPCnt_RST  += TCP_FLAG_RST(TCP->Flags);
-									Pipe->TCPCnt_ACK  += TCP_FLAG_ACK(TCP->Flags);
-									Pipe->TCPCnt_PSH  += TCP_FLAG_PSH(TCP->Flags);
-								}
-								break;
-							case IPv4_PROTO_UDP:
-								{
-									UDPHeader_t* UDP = (UDPHeader_t*)(Payload + IPOffset);
-
-								}
-								break;
-
-							}
-						}
-					}
-				}
-
-				// time bin in comparsion 
-				Pipe->Time.AllPkt 	+= 1;
-				Pipe->Time.AllByte	+= Pkt->LengthWire;
-			}
-
-			// update stats
-			PCAPOffset 	+= sizeof(FMADPacket_t);
-			PCAPOffset 	+= Pkt->LengthCapture; 
-			TotalPkt	+= 1;
-
-			// write the per filter log files
-			LastTS 		= Pkt->TS;
-			if (LastTS > NextOutputTS)
-			{
-				// print every 60sec
-				NextOutputTS = LastTS + g_OutputTimeNS;
-		
-				// process all pipelines
-				for (int p=0; p < s_PipelinePos; p++)
-				{
-					Pipeline_t* Pipe = s_PipelineList[p];
-					Pipeline_WriteLog(Pipe, LastTS);
-				}
-			}
+		// aggreate pipeline stats
+		for (int i=0; i < s_PipelinePos; i++)
+		{
+			Pipeline_StatsAggregate(s_PipelineList[i]);
 		}
 
 		// write processing status 
@@ -788,11 +1118,13 @@ int Parse_Start(void)
 
 			double dT = (clock_ns() - StartTS) / 1e9;
 			double Bps = (PCAPOffset * 8.0) / dT; 
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps StreamCat: %6.2f MB Fetch %.2f Send %.2f\n", 
+			double Pps = (TotalPktUnique) / dT; 
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f\n", 
 						dT / (60*60), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
 						Bps / 1e9, 
+						Pps / 1e6, 
 						StreamCAT_BytePending / (float)kMB(1), 
 						StreamCAT_CPUFetch,
 						StreamCAT_CPUSend);
@@ -801,12 +1133,27 @@ int Parse_Start(void)
 		}
 	}
 
+printf("last ts: %lli\n", LastTS);
+
+	// flush any remaining stats 
+	for (int p=0; p < s_PipelinePos; p++)
+	{
+		Pipeline_t* Pipe = s_PipelineList[p];
+		Pipeline_WriteLog(Pipe, LastTS);
+	}
+
 	// flush pipe with last log
 	for (int p=0; p < s_PipelinePos; p++)
 	{
 		Pipeline_t* Pipe = s_PipelineList[p];
 		Pipeline_Close(Pipe, LastTS);
 	}
+
+	printf("TotalPktUnique : %10lli\n", TotalPktUnique);
+	printf("TotalPkt       : %10lli\n", TotalPkt);
+	printf("TotalPktHit    : %10lli\n", TotalPktHit);
+
+	printf("Total Time     : %.f Sec\n", (clock_ns() - StartTS) / 1e9);
 
 	return 0;
 }
