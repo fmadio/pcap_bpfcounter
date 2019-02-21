@@ -27,6 +27,7 @@
 
 #include "libpcap/pcap.h"
 #include "fTypes.h"
+#include "fProfile.h"
 #include "lua.h"
 
 //-------------------------------------------------------------------------------------------------
@@ -114,6 +115,8 @@ typedef struct
 	PipelineStats_t		Stats;						// current aggregated stats 
 													// for the pipeline 
 
+	u32					QueueLock;					// mutual exclusion access to the queue
+	s32					QueueDepth;					// depth of the queue
 	PipelineStats_t*	QueueHead[32];				// one queue head per cpu 
 	PipelineStats_t*	QueueTail[32];				// one queue head per cpu 
 
@@ -142,19 +145,37 @@ typedef struct PacketBlock_t
 
 } PacketBlock_t;
 
+//-------------------------------------------------------------------------------------------------
+
 extern u64				g_OutputTimeNS;					// time between outputs
 
-static u32				s_PipelinePos = 0;
-static u32				s_PipelineMax = 16*1024;
+static u32				s_PipelinePos 		= 0;
+static u32				s_PipelineMax 		= 16*1024;
 static Pipeline_t* 		s_PipelineList[16*1024];	
 
 static PacketBlock_t*	s_PacketBlockFree 	= NULL;		// free packet buffer list
 
+static u32				s_PacketBlockMax	= 64;		// number of blocks to allocate
+
+static volatile u32		s_PacketBlockPut	= 0;		// packet blocks ready for processing	
+static volatile u32		s_PacketBlockGet	= 0;		// packet blocks completed processing
+static volatile u32		s_PacketBlockMsk	= 0x7f;		// 
+static PacketBlock_t*	s_PacketBlockRing[128];			// packet block queue
+
 static PipelineStats_t*	s_PipeStatsFree		= NULL;		// free stats list
-static u32				s_PipeStatsListMax	= 128;		// number of entries
+static u32				s_PipeStatsListMax	= 2048;		// number of stats entries to allocate 
+static u32				s_PipeStatsLock		= 0;		// mutual exclusion for alloc/free
 
 u64						g_TotalMemory		= 0;		// total memory allocated
-static u32				s_CPUActive			= 1;		// number of worker cpus active
+
+u32						g_CPUCore			= 31;		// main cpu mapping
+u32						g_CPUWorker[32]		= {30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20};
+u32						g_CPUActive			= 1;		// number of worker cpus active
+
+volatile bool			g_Exit				= false;	// global exit request
+
+static pthread_t   		s_PktBlockThread[16];			// worker decode thread list
+static u32				s_PktBlockLock		= 0;		// mutual exculsion for alloc/free
 
 //-------------------------------------------------------------------------------------------------
 
@@ -391,13 +412,38 @@ int lpipe_output_time(lua_State* L)
 // pipeline stats 
 static PipelineStats_t* PipeStats_Alloc(u64 SeqNo)
 {
-	PipelineStats_t* Stats = s_PipeStatsFree;
-	assert(Stats != NULL);
+	PipelineStats_t* Stats = NULL; 
+	u32 Timeout = 0;
+	while (true)
+	{
+		sync_lock(&s_PktBlockLock, 100);
+		{
+			Stats = s_PipeStatsFree;
 
-	Stats->SeqNo = SeqNo;
+			// has a freee entry?
+			if (Stats != NULL)
+			{
+				Stats->SeqNo = SeqNo;
+				s_PipeStatsFree = Stats->FreeNext;
+			}
+		}
+		sync_unlock(&s_PktBlockLock);
 
-	s_PipeStatsFree = Stats->FreeNext;
+		// sucessfull allocation
+		if (Stats != NULL) break;
 
+		// wait a bit
+		usleep(0);
+		if (Timeout++ > 100e3)
+		{
+			for (int i=0; i < s_PipelinePos; i++)
+			{
+				Pipeline_t* Pipe = s_PipelineList[i];	
+				printf("[%3i] QueueDepth:%i\n", i, Pipe->QueueDepth);
+			}
+			assert(false);
+		}
+	}
 	return Stats;
 }
 
@@ -405,31 +451,35 @@ static PipelineStats_t* PipeStats_Alloc(u64 SeqNo)
 // pipeline stats free 
 static void PipeStats_Free(PipelineStats_t* PipeStats)
 {
-	PipeStats->SeqNo	= 0;
-	PipeStats->IsFlush	= false;
+	sync_lock(&s_PktBlockLock, 100);
+	{
+		PipeStats->SeqNo	= 0;
+		PipeStats->IsFlush	= false;
 
-	PipeStats->Time.BinCnt = 0;
+		PipeStats->Time.BinCnt = 0;
 
-	PipeStats->Time.Pkt = 0;
-	PipeStats->Time.Byte = 0;
-	PipeStats->AllPkt = 0;
-	PipeStats->AllByte = 0;
-	memset(&PipeStats->Time.RMON1, 0, sizeof(PipeStats->Time.RMON1) );
+		PipeStats->Time.Pkt = 0;
+		PipeStats->Time.Byte = 0;
+		PipeStats->AllPkt = 0;
+		PipeStats->AllByte = 0;
+		memset(&PipeStats->Time.RMON1, 0, sizeof(PipeStats->Time.RMON1) );
 
-	// clear tcp flag stats 
-	PipeStats->TCPCnt_FIN 	= 0;
-	PipeStats->TCPCnt_SYN 	= 0;
-	PipeStats->TCPCnt_RST	= 0;
-	PipeStats->TCPCnt_ACK 	= 0;
-	PipeStats->TCPCnt_PSH 	= 0;
+		// clear tcp flag stats 
+		PipeStats->TCPCnt_FIN 	= 0;
+		PipeStats->TCPCnt_SYN 	= 0;
+		PipeStats->TCPCnt_RST	= 0;
+		PipeStats->TCPCnt_ACK 	= 0;
+		PipeStats->TCPCnt_PSH 	= 0;
 
-	// reset delta counters
-	PipeStats->TotalPkt 	= 0;
-	PipeStats->TotalByte 	= 0;
+		// reset delta counters
+		PipeStats->TotalPkt 	= 0;
+		PipeStats->TotalByte 	= 0;
 
-	// add to free stack
-	PipeStats->FreeNext = s_PipeStatsFree;
-	s_PipeStatsFree	= PipeStats;
+		// add to free stack
+		PipeStats->FreeNext = s_PipeStatsFree;
+		s_PipeStatsFree	= PipeStats;
+	}
+	sync_unlock(&s_PktBlockLock);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -522,6 +572,8 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 
 	Pipe->Stats.Time.Pkt = 0;
 	Pipe->Stats.Time.Byte = 0;
+
+	// RMON1 stats are not cumaltive
 	memset(&Pipe->Stats.Time.RMON1, 0, sizeof(Pipe->Stats.Time.RMON1) );
 }
 
@@ -537,11 +589,11 @@ void Pipeline_Close(Pipeline_t* Pipe, u64 LastTS)
 // pipeline aggregate any stats generated
 static void Pipeline_StatsAggregate(Pipeline_t* P)
 {
-	for (int j=0; j < 16; j++)
+	for (int j=0; j < 512; j++)
 	{
 		// free anything
 		u32 UpdateCnt = 0;
-		for (int cpu=0; cpu < s_CPUActive; cpu++)
+		for (int cpu=0; cpu < g_CPUActive; cpu++)
 		{
 			PipelineStats_t* Stats = P->QueueHead[cpu];
 			if (Stats == NULL) continue;
@@ -553,8 +605,14 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 			}
 
 			// decrement ptr 
-			P->QueueHead[cpu] = Stats->QueueNext;
-			if (P->QueueHead[cpu] == NULL) P->QueueTail[cpu] = NULL; 
+			sync_lock(&P->QueueLock, 100);
+			{
+				P->QueueHead[cpu] = Stats->QueueNext;
+				if (P->QueueHead[cpu] == NULL) P->QueueTail[cpu] = NULL; 
+			}
+			sync_unlock(&P->QueueLock);
+
+			__sync_fetch_and_add(&P->QueueDepth, -1);
 
 			// update stats
 			P->Stats.TotalPkt		+= Stats->TotalPkt;
@@ -617,10 +675,27 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 
 static PacketBlock_t* PktBlock_Allocate(void)
 {
-	PacketBlock_t* PktBlock = s_PacketBlockFree;
-	assert(PktBlock != NULL);
+	PacketBlock_t* PktBlock = NULL; 
+	u32 Timeout = 0;
+	while (true)
+	{
+		sync_lock(&s_PktBlockLock, 100);
+		{
+			PktBlock = s_PacketBlockFree;
+			if (PktBlock != NULL)
+			{
+				s_PacketBlockFree		= PktBlock->FreeNext;
+			}
+		}
+		sync_unlock(&s_PktBlockLock);
 
-	s_PacketBlockFree		= PktBlock->FreeNext;
+		// sucessfull allocation 
+		if (PktBlock != NULL) break;
+
+		// wait a bit
+		usleep(0);
+		assert(Timeout++ < 100e3);
+	}
 
 	return PktBlock; 
 }
@@ -629,19 +704,37 @@ static PacketBlock_t* PktBlock_Allocate(void)
 
 void PktBlock_Free(PacketBlock_t* PktBlock)
 {
-	// reset packet buffer
-	PktBlock->PktCnt		= 0;
-	PktBlock->ByteWire		= 0;
-	PktBlock->ByteCapture	= 0;
+	sync_lock(&s_PktBlockLock, 100);
+	{
+		// reset packet buffer
+		PktBlock->PktCnt		= 0;
+		PktBlock->ByteWire		= 0;
+		PktBlock->ByteCapture	= 0;
 
-	PktBlock->TSFirst		= -1;
-	PktBlock->TSLast		= 0;
+		PktBlock->TSFirst		= -1;
+		PktBlock->TSLast		= 0;
 
-	PktBlock->BufferLength	= 0;
+		PktBlock->BufferLength	= 0;
 
-	PktBlock->FreeNext 		= s_PacketBlockFree;
+		PktBlock->FreeNext 		= s_PacketBlockFree;
 
-	s_PacketBlockFree 		= PktBlock;
+		s_PacketBlockFree 		= PktBlock;
+	}
+	sync_unlock(&s_PktBlockLock);
+}
+
+//-------------------------------------------------------------------------------------------------
+
+static void Pipeline_QueueDump(Pipeline_t* Pipe, u32 CPUID)
+{
+	u32 Depth = 0;
+	PipelineStats_t* S = Pipe->QueueHead[CPUID];
+	while (S != NULL)
+	{
+		printf("%3i : %p Seq: %i Pipe %i\n", Depth, S, S->SeqNo, Pipe->StatsSeqNo);
+		S = S->QueueNext;
+		Depth++;
+	}
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -650,18 +743,23 @@ static void Pipeline_QueueStats(Pipeline_t* Pipe, PipelineStats_t* Stats, u32 CP
 {
 	Stats->QueueNext = NULL;
 
-	// first entry
-	if (Pipe->QueueTail[CPUID] == NULL)
+	sync_lock(&Pipe->QueueLock, 100);
 	{
-		Pipe->QueueHead[CPUID] = Stats;
-		Pipe->QueueTail[CPUID] = Stats;
+		// first entry
+		if (Pipe->QueueTail[CPUID] == NULL)
+		{
+			Pipe->QueueHead[CPUID] = Stats;
+			Pipe->QueueTail[CPUID] = Stats;
+		}
+		// add to tail
+		else
+		{
+			Pipe->QueueTail[CPUID]->QueueNext 	= Stats;
+			Pipe->QueueTail[CPUID] 				= Stats;
+		}
 	}
-	// add to tail
-	else
-	{
-		Pipe->QueueTail[CPUID]->QueueNext 	= Stats;
-		Pipe->QueueTail[CPUID] 				= Stats;
-	}
+	sync_unlock(&Pipe->QueueLock);
+	__sync_fetch_and_add(&Pipe->QueueDepth, 1);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -836,7 +934,6 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 
 							}
 							break;
-
 						}
 					}
 				}
@@ -881,6 +978,41 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 
 //-------------------------------------------------------------------------------------------------
 
+void* PktBlock_Worker(void* User)
+{
+	u32 CPUID = __sync_fetch_and_add(&g_CPUActive, 1);
+
+	printf("Start PktBlock Worker: %i\n", CPUID);
+	while (!g_Exit)
+	{
+		u64 TSC0 = rdtsc();
+
+		u32 Get = s_PacketBlockGet;	
+		if (Get == s_PacketBlockPut)
+		{
+			usleep(0);
+			continue;
+		}
+
+		// consume this block 
+		if (__sync_bool_compare_and_swap(&s_PacketBlockGet, Get, Get + 1))
+		{
+			// block to process 
+			PacketBlock_t* PktBlock = s_PacketBlockRing[ Get & s_PacketBlockMsk ];
+
+			// run bpf filters on the block 
+			PktBlock_Process(CPUID, PktBlock);
+
+			// free the block
+			PktBlock_Free(PktBlock);
+
+			u64 TSC1 = rdtsc();
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+
 int Parse_Start(void)
 {
 	u64 StartTS					= clock_ns();
@@ -915,7 +1047,7 @@ int Parse_Start(void)
 	u64 NextPrintTSC			= 0;
 
 	// allocate packet blocks
-	for (int i=0; i < 8; i++)
+	for (int i=0; i < s_PacketBlockMax; i++)
 	{
 		PacketBlock_t*	PktBlock	= (PacketBlock_t*)malloc(sizeof(PacketBlock_t));
 		memset(PktBlock, 0, sizeof(PacketBlock_t));
@@ -956,7 +1088,31 @@ int Parse_Start(void)
 
 		// add to free queue
 		PipeStats_Free(Stats);	
-		fprintf(stderr, "PipeStats TotalMemory: %.2f MB\n", g_TotalMemory / (float)kMB(1) );
+	}
+	fprintf(stderr, "PipeStats TotalMemory: %.2f MB\n", g_TotalMemory / (float)kMB(1) );
+
+	// create BPF processing threads
+	u32 CPUCnt = 0;
+	pthread_create(&s_PktBlockThread[0], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	pthread_create(&s_PktBlockThread[1], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	//pthread_create(&s_PktBlockThread[2], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	//pthread_create(&s_PktBlockThread[3], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	//pthread_create(&s_PktBlockThread[4], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	//pthread_create(&s_PktBlockThread[5], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+
+	// set the main thread cpu
+	cpu_set_t Thread0CPU;
+	CPU_ZERO(&Thread0CPU);
+	CPU_SET (g_CPUCore, &Thread0CPU);
+	pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &Thread0CPU);
+
+	// set worker cpu mapping
+	for (int i=0; i < CPUCnt; i++)
+	{
+		cpu_set_t Thread0CPU;
+		CPU_ZERO(&Thread0CPU);
+		CPU_SET (g_CPUWorker[i], &Thread0CPU);
+		pthread_setaffinity_np(s_PktBlockThread[i], sizeof(cpu_set_t), &Thread0CPU);
 	}
 
 	u64   StreamCAT_BytePending	= 0;
@@ -973,8 +1129,14 @@ int Parse_Start(void)
 
 	while (!feof(FIn))
 	{
+		fProfile_Start(0, "Core Top");
+
 		// allocate packet block 
+		fProfile_Start(3, "PacketBlock Alloc");
+
 		PacketBlock_t* PktBlock = PktBlock_Allocate();
+
+		fProfile_Stop(3);
 
 		// old style pcap
 		if (IsPCAP)
@@ -1094,17 +1256,29 @@ int Parse_Start(void)
 		// update last known TS 
 		if (PktBlock->PktCnt > 0) LastTS = PktBlock->TSLast;
 
-		// run bpf filters on the block 
-		PktBlock_Process(0, PktBlock);
+		// stall untill theres space
+		fProfile_Start(2, "PacketBlock Queue");
+		while ((s_PacketBlockPut  - s_PacketBlockGet) > (s_PacketBlockMsk+1) - 16)
+		{
+			usleep(0);
+		}
+		fProfile_Stop(2);
 
-		// free the block
-		PktBlock_Free(PktBlock);
+		// push to processing queue
+		s_PacketBlockRing[ s_PacketBlockPut & s_PacketBlockMsk ] = PktBlock;
+		s_PacketBlockPut++;
+
+		// run single threaded 
+		//PktBlock_Process(0, PktBlock);
+		//PktBlock_Free(PktBlock);
 
 		// aggreate pipeline stats
+		fProfile_Start(1, "Aggregate");
 		for (int i=0; i < s_PipelinePos; i++)
 		{
 			Pipeline_StatsAggregate(s_PipelineList[i]);
 		}
+		fProfile_Stop(1);
 
 		// write processing status 
 		u64 TSC = rdtsc();
@@ -1119,7 +1293,10 @@ int Parse_Start(void)
 			double dT = (clock_ns() - StartTS) / 1e9;
 			double Bps = (PCAPOffset * 8.0) / dT; 
 			double Pps = (TotalPktUnique) / dT; 
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f\n", 
+
+			u32 QueueDepth = s_PipelineList[0]->QueueDepth;
+
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i\n", 
 						dT / (60*60), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
@@ -1127,13 +1304,41 @@ int Parse_Start(void)
 						Pps / 1e6, 
 						StreamCAT_BytePending / (float)kMB(1), 
 						StreamCAT_CPUFetch,
-						StreamCAT_CPUSend);
+						StreamCAT_CPUSend,
+						
+						QueueDepth);
 			fflush(stderr);
 			fflush(stdout);
+
+			static int cnt = 0;
+			if (cnt++ > 10)
+			{
+				cnt = 0;
+				fProfile_Dump(0);
+			}
 		}
+
+		fProfile_Stop(0);
 	}
 
-printf("last ts: %lli\n", LastTS);
+	// wait for all blocks have completed
+	while (s_PacketBlockGet != s_PacketBlockPut)
+	{
+		usleep(1000);
+	}
+
+	// signal threads to exit and wait 
+	g_Exit = true;
+	for (int i=0; i < CPUCnt; i++)
+	{
+		pthread_join(s_PktBlockThread[i], 0);
+	}
+
+	// aggreate after final processing 
+	for (int i=0; i < s_PipelinePos; i++)
+	{
+		Pipeline_StatsAggregate(s_PipelineList[i]);
+	}
 
 	// flush any remaining stats 
 	for (int p=0; p < s_PipelinePos; p++)

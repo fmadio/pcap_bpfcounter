@@ -23,6 +23,8 @@
 bool 		g_SignalExit = 0;
 u64			g_OutputTimeNS = 1e9;
 
+double		TSC2Nano = 0.0;
+
 
 extern u8	_binary_lmain_lua_start;
 extern u8	_binary_lmain_lua_end;

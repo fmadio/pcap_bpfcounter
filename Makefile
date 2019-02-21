@@ -1,5 +1,6 @@
 OBJS =
 OBJS += parser.o
+OBJS += fProfile.o
 
 LOBJS =
 LOBJS += lmain.o
