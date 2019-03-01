@@ -21,12 +21,10 @@ CreatePipeline = function(Info)
 
 	-- open the output file 
 	local d = os.ns2clock( os.clock_ns() )  
-	local FileName = string.format(Info.Output.."/%04i-%02i-%02i_%02i%02i-"..Info.Name,
+	local FileName = string.format(Info.Output.."/%04i-%02i-%02i-"..Info.Name,
 			d.year,
 			d.month,
-			d.day,
-			d.hour,
-			d.min)
+			d.day)
 	if (pipe.output(Index, FileName) != nil) then
 		return
 	end

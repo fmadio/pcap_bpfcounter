@@ -341,7 +341,7 @@ int lpipe_output(lua_State* L)
 	strncpy(Pipe->OutputFileName, FileName, sizeof(Pipe->OutputFileName) );
 
 	// atteempt to open the filename
-	Pipe->OutputFile = fopen(Pipe->OutputFileName, "w+");
+	Pipe->OutputFile = fopen(Pipe->OutputFileName, "a+");
 	if (!Pipe->OutputFile)
 	{
 		printf("[%-40s] ERROR: failed to create output filename (%s)\n", Pipe->OutputFileName);
@@ -523,10 +523,10 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	}
 
 	u64 BpsMax  =  1e9 * (8.0 * (float)BytesMax) / (float)Pipe->TimeBinNS;
-	u64 BpsMean = (1e9 *  8.0 * ByteS1) / g_OutputTimeNS;
+	u64 BpsMean = (1e9 *  8.0 * ByteS1)          / g_OutputTimeNS;
 
 	u64 PpsMax  =  1e9 * ((float)PktMax) / (float)Pipe->TimeBinNS;
-	u64 PpsMean = (1e9 * PktS1) / g_OutputTimeNS;
+	u64 PpsMean = (1e9 * (float)PktS1)   / g_OutputTimeNS;
 
 	float BytePct = Pipe->Stats.TotalByte * inverse(Pipe->Stats.AllByte);
 
@@ -575,6 +575,10 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 
 	// RMON1 stats are not cumaltive
 	memset(&Pipe->Stats.Time.RMON1, 0, sizeof(Pipe->Stats.Time.RMON1) );
+
+	// total stats are cumulative
+	Pipe->Stats.TotalPkt = 0;
+	Pipe->Stats.TotalByte = 0;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -1247,7 +1251,10 @@ int Parse_Start(void)
 			PktBlock->OutputTS 	= NextOutputTS;
 
 			// print every 60sec
-			NextOutputTS += g_OutputTimeNS;
+			// jump to next block, e.g if there are X periods of g_OutputTimeNS
+			// without any packets skip them
+			u64 NextIndex 		= PktBlock->TSLast / g_OutputTimeNS;
+			NextOutputTS 		= (NextIndex + 1) * g_OutputTimeNS;
 
 			// add seq gap for split packet block
 			SeqNo++;
