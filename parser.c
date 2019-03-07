@@ -385,6 +385,7 @@ int lpipe_output(lua_State* L)
 			"TCP.ACK",
 			"TCP.PSH"
 	);
+	fflush(Pipe->OutputFile);
 
 	return 0;
 }
@@ -715,7 +716,7 @@ void PktBlock_Free(PacketBlock_t* PktBlock)
 		PktBlock->ByteWire		= 0;
 		PktBlock->ByteCapture	= 0;
 
-		PktBlock->TSFirst		= -1;
+		PktBlock->TSFirst		= 0;
 		PktBlock->TSLast		= 0;
 
 		PktBlock->BufferLength	= 0;
