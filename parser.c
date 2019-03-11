@@ -351,12 +351,12 @@ int lpipe_output(lua_State* L)
 	}
 	printf("[%-40s] created output filename (%s)\n", Pipe->Name, Pipe->OutputFileName);
 
-	fprintf(Pipe->OutputFile, "BPF Expression: (%s)\n", Pipe->BPF);
-	fprintf(Pipe->OutputFile, "Burst Bucket  : %16lli nsec\n", Pipe->TimeBinNS);
-	fprintf(Pipe->OutputFile, "Output Time   : %16lli nsec\n", Pipe->OutputNS);
-	fprintf(Pipe->OutputFile, "------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
+	fprintf(Pipe->OutputFile, "# BPF Expression: (%s)\n", Pipe->BPF);
+	fprintf(Pipe->OutputFile, "# Burst Bucket  : %16lli nsec\n", Pipe->TimeBinNS);
+	fprintf(Pipe->OutputFile, "# Output Time   : %16lli nsec\n", Pipe->OutputNS);
+	fprintf(Pipe->OutputFile, "# -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
 
-	fprintf(Pipe->OutputFile, "%32s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s\n",
+	fprintf(Pipe->OutputFile, "# %32s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s\n",
 			"Time", 
 			"EpochNS", 
 			"Packets", 
