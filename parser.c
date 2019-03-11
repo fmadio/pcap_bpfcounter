@@ -619,6 +619,9 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 
 			__sync_fetch_and_add(&P->QueueDepth, -1);
 
+			// set last TS
+			P->Stats.LastTS			= Stats->LastTS; 
+
 			// update stats
 			P->Stats.TotalPkt		+= Stats->TotalPkt;
 			P->Stats.TotalByte		+= Stats->TotalByte;
@@ -658,7 +661,7 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 			// write log 
 			if (Stats->IsFlush)
 			{
-				Pipeline_WriteLog(P, Stats->LastTS);
+				Pipeline_WriteLog(P, P->Stats.LastTS);
 			}
 
 			// release back to pool
@@ -823,6 +826,9 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				TimeIndex = 0;
 			}
 
+			// update last TS of processed packet
+			PipeStats->LastTS = Pkt->TS;
+
 			// run BPF expression
 			int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
 			if (Result != 0)
@@ -831,7 +837,6 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				PipeStats->TotalPkt		+= 1;
 				PipeStats->TotalByte	+= Pkt->LengthWire;
 
-				PipeStats->LastTS = Pkt->TS;
 
 				// update Bins
 				PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
