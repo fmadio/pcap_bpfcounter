@@ -168,8 +168,8 @@ static u32				s_PipeStatsLock		= 0;		// mutual exclusion for alloc/free
 
 u64						g_TotalMemory		= 0;		// total memory allocated
 
-u32						g_CPUCore			= 31;		// main cpu mapping
-u32						g_CPUWorker[32]		= {30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20};
+u32						g_CPUCore			= 15;		// main cpu mapping
+u32						g_CPUWorker[32]		= {20, 21, 22, 23};
 u32						g_CPUActive			= 1;		// number of worker cpus active
 
 volatile bool			g_Exit				= false;	// global exit request
@@ -1105,8 +1105,8 @@ int Parse_Start(void)
 	u32 CPUCnt = 0;
 	pthread_create(&s_PktBlockThread[0], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
 	pthread_create(&s_PktBlockThread[1], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	//pthread_create(&s_PktBlockThread[2], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	//pthread_create(&s_PktBlockThread[3], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	pthread_create(&s_PktBlockThread[2], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	pthread_create(&s_PktBlockThread[3], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
 	//pthread_create(&s_PktBlockThread[4], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
 	//pthread_create(&s_PktBlockThread[5], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
 
@@ -1330,7 +1330,6 @@ int Parse_Start(void)
 				fProfile_Dump(0);
 			}
 		}
-
 		fProfile_Stop(0);
 	}
 
