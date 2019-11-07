@@ -260,6 +260,8 @@ Output_t* Output_Create(bool IsNULL,
 						u32 Output_FilterPath,
 						u8* QueuePath,
 						u32 ThreadCnt,
+
+						u32  CPUCnt,
 						s32* CPUMap)
 {
 	fprintf(stderr, "OutputBuffer Config\n");
@@ -273,6 +275,13 @@ Output_t* Output_Create(bool IsNULL,
 	fprintf(stderr, "   FilterPath    : %i\n", Output_FilterPath); 
 	fprintf(stderr, "   QueuePath     : %s\n", QueuePath); 
 	fprintf(stderr, "   ThreadCnt     : %i\n", ThreadCnt); 
+
+	fprintf(stderr, "   CPUMap        : %i [", CPUCnt); 
+	for (int i=0; i < CPUCnt; i++)
+	{
+		fprintf(stderr, "%i ", CPUMap[i]); 
+	}
+	fprintf(stderr, "]\n");
 
 
 	s_Output_Keepalive 	= Output_KeepAlive;
@@ -368,7 +377,6 @@ Output_t* Output_Create(bool IsNULL,
 	}
 
 	// create 32 worker threads
-	u32 CoreCnt = 4;				// assume 4 cores for the output
 	for (int i=0; i < ThreadCnt; i++)
 	{
 		O->OutputThread[i].Sock = -1;
@@ -385,9 +393,10 @@ Output_t* Output_Create(bool IsNULL,
 		pthread_create(&O->PushThread[i], NULL, Output_Worker, (void*)&O->OutputThread[i]);
 		O->OutputThreadCnt++;
 	}
+	// map them evenly across all the CPU cores 
 	for (int i=0; i < O->OutputThreadCnt; i++)
 	{
-		s32 CPU = CPUMap[i % CoreCnt];
+		s32 CPU = CPUMap[i % CPUCnt ];
 		if (CPU < 0) continue;
 
 		cpu_set_t Thread0CPU;

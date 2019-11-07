@@ -374,6 +374,16 @@ static bool LoadLuaEnvironment(u8* FileName)
 
 int main(int argc, char* argv[])
 {
+	lua_State *L = lua_open();
+	luaL_openlibs(L);
+
+	// initialize symbol table 
+	LoadLuaEnvironment("./pcap_bpfcounter");	
+
+	// parse config options
+	lua_newtable(L);
+	u32 idx = 1;
+
 	u8* ConfigFileName = "./config.lua";
 	for (int i=0; i < argc; i++)
 	{
@@ -382,14 +392,12 @@ int main(int argc, char* argv[])
 			ConfigFileName = argv[i+1];
 			i++;
 		}
+
+		lua_pushstring(L, argv[i]);
+		lua_rawseti(L, -2, idx++);
 	}
+	lua_setglobal(L, "ARGV");
 
-
-	lua_State *L = lua_open();
-	luaL_openlibs(L);
-
-	// initialize symbol table 
-	LoadLuaEnvironment("./pcap_bpfcounter");	
 
 //	Parse_Open(L);
 //	Output_Open(L);

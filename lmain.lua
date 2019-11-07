@@ -4,7 +4,6 @@ ffi.cdef[[
 
 
 	struct Output_t;
-
 	struct Output_t* Output_Create(	bool IsNULL, 
 									bool IsSTDOUT, 
 									bool IsESOut, 	
@@ -16,14 +15,12 @@ ffi.cdef[[
 									u32 Output_FilterPath, 
 									u8* QueuePath, 
 									u32 ThreadCnt,
+									u32 CPUCnt,
 									u32* CPUMap);
 
 	void Output_ESHostAdd(struct Output_t* Out, u8* HostName, u32 HostPort);
 
-
-
 	// pipeline status
-
 	struct Pipeline_t;
 	struct Pipeline_t* 		Pipe_Create			(u8* Name);
 	int 					Pipe_SetBPF			(struct Pipeline_t* Pipe, u8* BPFString);
@@ -37,27 +34,60 @@ ffi.cdef[[
 
 ]]
 
-local Output_IsNULL 		= false;
-local Output_IsSTDOUT 		= false;
-local Output_IsESPUSH 		= false;
-local Output_IsCompress 	= false;
-local Output_IsESNULL 		= false;
+-----------------------------------------------------------------------------------------------------------------------------------
 
-local Output_IsCompress 	= false;
-local Output_IsESNULL 		= false;
+local Output_IsNULL 			= false;
+local Output_IsSTDOUT 			= false;
+local Output_IsESPUSH 			= false;
+local Output_IsCompress 		= false;
+local Output_IsESNULL 			= false;
 
-local Output_ESHostList 	= {};
-local Output_ThreadCnt		= 32 
-local Output_CPUMapList 	= {0, 1, 2, 3, 4, 5, 6, 7};
+local Output_IsCompress 		= false;
+local Output_IsESNULL 			= false;
+
+local Output_ESHostList 		= {};
+local Output_ThreadCnt			= 32 
+local Output_CPUMapList 		= {0, 1, 2, 3};
 
 local Output_KeepAlive			= true;
 local Output_KeepAliveTimeout	= 10e9;
 local Output_FilterPath			= true;
 
+local Pipe_CPUMapList 			= {}
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- setup default cpu maps based on command line args 
+for i,j in ipairs(ARGV) do
+
+	-- cpu pipe workers assignment
+	if (j == "--cpu-pipe") then 
+
+		local CPUCnt = tonumber( ARGV[i + 1] ) 
+		local CPUList = {} 
+		for a=0,CPUCnt-1 do
+			table.insert(CPUList, tonumber( ARGV[ i + 2 + a] ))
+		end	
+
+		-- set mapping
+		local _CPUList = ffi.new("int[128]", CPUList) 
+		ffi.C.Pipe_SetCPUWorker(#CPUList, _CPUList)
+	end
+
+	-- cpu mapping for output workers 
+	if (j == "--cpu-output") then 
+
+		local CPUCnt = tonumber( ARGV[i + 1] ) 
+		local CPUList = {} 
+		for a=0,CPUCnt-1 do
+			table.insert(CPUList, tonumber( ARGV[ i + 2 + a] ))
+		end	
+		Output_CPUMapList = CPUList
+	end
+end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- sets what kind of output mode to use
-Output_Mode= function(Mode)
+Output_Mode = function(Mode)
 
 	if (Mode == "NULL") then
 		Output_IsNULL = true;
@@ -88,25 +118,24 @@ end
 -- creates the output backend
 Output_Create = function(Mode)
 
-
 	local _CPUMap = ffi.new("int[128]", Output_CPUMapList) 
 
-	local Output = ffi.C.Output_Create(	Output_IsNULL, 
-										Output_IsSTDOUT, 
-										Output_IsESPUSH, 
-										Output_IsCompress, 
-										Output_IsESNULL, 
-										64, 
-										Output_KeepAlive,
-										Output_KeepAliveTimeout,
-										Output_FilterPath,
-										nil,
-										Output_ThreadCnt,
-										_CPUMap);
+	local Output  = ffi.C.Output_Create(	Output_IsNULL, 
+											Output_IsSTDOUT, 
+											Output_IsESPUSH, 
+											Output_IsCompress, 
+											Output_IsESNULL, 
+											64, 
+											Output_KeepAlive,
+											Output_KeepAliveTimeout,
+											Output_FilterPath,
+											nil,
+											Output_ThreadCnt,
+											#Output_CPUMapList,
+											_CPUMap);
 
 	-- add any ES Hosts
 	for i,Info in ipairs(Output_ESHostList) do
-
 		ffi.C.Output_ESHostAdd(Output, ffi.cast("u8*", Info.Host), Info.Port)
 	end
 
@@ -136,8 +165,7 @@ Pipe_CPUMap = function(CPUMap)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
-
-
+-- top level 
 Pipe_Create = function(Info)
 
 	-- create output object if it has not been created yet
@@ -165,6 +193,4 @@ Pipe_Create = function(Info)
 	if (Info.JSON != nil) then
 		ffi.C.Pipe_SetUserJSON(Pipe, ffi.cast("u8*", Info.JSON))
 	end
-	
-
 end
