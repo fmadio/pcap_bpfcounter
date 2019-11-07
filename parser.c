@@ -28,6 +28,7 @@
 #include "libpcap/pcap.h"
 #include "fTypes.h"
 #include "fProfile.h"
+#include "output.h"
 #include "lua.h"
 
 //-------------------------------------------------------------------------------------------------
@@ -94,31 +95,34 @@ typedef struct PipelineStats_t
 
 } PipelineStats_t;
 
-typedef struct
+
+typedef struct Pipeline_t
 {
 	// rule definition 
-	u8					Name[256];					// string name of the expression
+	u8						Name[256];					// string name of the expression
 
 	// output files
-	u8					OutputFileName[1024];		// full path of output name
-	FILE*				OutputFile;					// file handle to write
-	u64					OutputNS;					// nanos between outputs 
+	u8						OutputFileName[1024];		// full path of output name
+	FILE*					OutputFile;					// file handle to write
+	u64						OutputNS;					// nanos between outputs 
+	u8*						OutputJSON;					// additional JSON line settings 
 
-	bool				BPFValid;					// BPF expression compiled sucessfully
-	u8					BPF[1024];
-	u8					BPFCode[16*1024];
 
-	u32					TimeBinMax;					// max bins
-	u64					TimeBinNS;					// time bin in nanos	
+	bool					BPFValid;					// BPF expression compiled sucessfully
+	u8						BPF[1024];
+	u8						BPFCode[16*1024];
 
-	u64					StatsSeqNo;					// next stats seq no to update
-	PipelineStats_t		Stats;						// current aggregated stats 
+	u32						TimeBinMax;					// max bins
+	u64						TimeBinNS;					// time bin in nanos	
+
+	u64						StatsSeqNo;					// next stats seq no to update
+	PipelineStats_t			Stats;						// current aggregated stats 
 													// for the pipeline 
 
-	u32					QueueLock;					// mutual exclusion access to the queue
-	s32					QueueDepth;					// depth of the queue
-	PipelineStats_t*	QueueHead[32];				// one queue head per cpu 
-	PipelineStats_t*	QueueTail[32];				// one queue head per cpu 
+	u32						QueueLock;					// mutual exclusion access to the queue
+	s32						QueueDepth;					// depth of the queue
+	PipelineStats_t*		QueueHead[32];				// one queue head per cpu 
+	PipelineStats_t*		QueueTail[32];				// one queue head per cpu 
 
 } Pipeline_t;
 
@@ -169,6 +173,7 @@ static u32				s_PipeStatsLock		= 0;		// mutual exclusion for alloc/free
 u64						g_TotalMemory		= 0;		// total memory allocated
 
 u32						g_CPUCore			= 15;		// main cpu mapping
+u32						g_CPUWorkerCnt		= 4;		// number of CPU worker BPF threads 
 u32						g_CPUWorker[32]		= {20, 21, 22, 23};
 u32						g_CPUActive			= 1;		// number of worker cpus active
 
@@ -176,6 +181,17 @@ volatile bool			g_Exit				= false;	// global exit request
 
 static pthread_t   		s_PktBlockThread[16];			// worker decode thread list
 static u32				s_PktBlockLock		= 0;		// mutual exculsion for alloc/free
+
+static u8				s_JSONBuffer[128*1024];				// line buffer for flushing stats output
+static u8*				s_JSONLine			= NULL;			// current output position 
+
+u8						g_CaptureName[256] 	= { 0 };
+u8						g_DeviceName[256];
+
+bool 					g_Verbose			= false;
+
+
+static struct Output_t*	s_Output			= NULL;		// output interface to use 
 
 //-------------------------------------------------------------------------------------------------
 
@@ -197,7 +213,7 @@ static inline u32 Length2RMON1(const u32 Length)
 
 //-------------------------------------------------------------------------------------------------
 // create a new pipeline 
-int lpipe_create(lua_State* L)
+struct Pipeline_t*  Pipe_Create(u8* Name)
 {
 	Pipeline_t*		Pipe = (Pipeline_t*)malloc( sizeof(Pipeline_t) );
 	memset(Pipe, 0, sizeof(Pipeline_t));
@@ -206,10 +222,9 @@ int lpipe_create(lua_State* L)
 	u32 Index 				= s_PipelinePos++;	
 	s_PipelineList[Index]	= Pipe;
 
-	const u8* Name = lua_tostring(L, -1);	
 	strncpy(Pipe->Name, Name, sizeof(Pipe->Name) );
 
-	printf("[%-40s] create a pipeline\n", Pipe->Name);
+	fprintf(stderr, "[%-40s] create a pipeline\n", Pipe->Name);
 
 	Pipe->OutputNS		= g_OutputTimeNS;
 
@@ -226,21 +241,14 @@ int lpipe_create(lua_State* L)
 	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
 	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
 
-	lua_pushnumber(L, Index);
-
-	return 1;
+	return Pipe;
 }
 
 //-------------------------------------------------------------------------------------------------
 // set a BPF filter 
-int lpipe_bpfset(lua_State* L)
+int Pipe_SetBPF(struct Pipeline_t* Pipe, u8* BPFString)
 {
-	/// pipeline to update
-	u32 Index = lua_tonumber(L, -2);	
-	Pipeline_t* Pipe = s_PipelineList[ Index ];
-
 	// get BPF string from config file
-	const u8* BPFString = lua_tostring(L, -1);	
 	strncpy(Pipe->BPF, BPFString, sizeof(Pipe->BPF) );
 
 	// parse BPF and generate bytecode/jit
@@ -256,41 +264,33 @@ int lpipe_bpfset(lua_State* L)
 		char* Error = pcap_geterr(p);
 		pcap_close(p);	
 
-		printf("[%-40s] ERROR: bpf invalid (%s) : %s\n", Pipe->Name, BPFString, Error); 
+		fprintf(stderr, "[%-40s] ERROR: bpf invalid (%s) : %s\n", Pipe->Name, BPFString, Error); 
 
-		lua_pushstring(L, Error);
-		return 1; 
+		return -1; 
 	}
 	pcap_close(p);	
 
 	Pipe->BPFValid = true;
 
 	// BPF code compiled 
-	printf("[%-40s] set BPF (%s)\n", Pipe->Name, Pipe->BPF);
+	fprintf(stderr, "[%-40s] set BPF \"%s\"\n", Pipe->Name, Pipe->BPF);
 
 	return 0;
 }
 
 //-------------------------------------------------------------------------------------------------
 // set burst rate 
-int lpipe_burst(lua_State* L)
+int Pipe_SetBurstTime(struct Pipeline_t* Pipe, double TimeBucketNS)
 {
-	/// pipeline to update
-	u32 Index 			= lua_tonumber(L, -2);	
-	Pipeline_t* Pipe 	= s_PipelineList[ Index ];
-
 	// burst rate 
-	u64 TimeBucketNS 	= lua_tonumber(L, -1);	
 	if (TimeBucketNS <= 0)
 	{
-		printf("[%-40s] ERROR: set TimeBucket %lli nsec invalid\n", Pipe->Name, TimeBucketNS);
-		lua_pushnumber(L, 1);
+		fprintf(stderr, "[%-40s] ERROR: set TimeBucket %lli nsec invalid\n", Pipe->Name, TimeBucketNS);
 		return 0;
 	}
 	if (TimeBucketNS < 100e3)
 	{
-		printf("[%-40s] ERROR: set TimeBucket %lli nsec too low\n", Pipe->Name, TimeBucketNS);
-		lua_pushnumber(L, 1);
+		fprintf(stderr, "[%-40s] ERROR: set TimeBucket %lli nsec too low\n", Pipe->Name, TimeBucketNS);
 		return 0;
 	}
 
@@ -301,8 +301,7 @@ int lpipe_burst(lua_State* L)
 	PipelineStats_t* PipeStats	= &Pipe->Stats; 
 	if (Pipe->TimeBinMax > TIME_BIN_MAX)
 	{
-		printf("[%-40s] ERROR: set TimeBucket %lli nsec too small for current config (%i/%i)\n", Pipe->Name, Pipe->TimeBinNS, Pipe->TimeBinMax, TIME_BIN_MAX);
-		lua_pushnumber(L, 1);
+		fprintf(stderr, "[%-40s] ERROR: set TimeBucket %lli nsec too small for current config (%i/%i)\n", Pipe->Name, Pipe->TimeBinNS, Pipe->TimeBinMax, TIME_BIN_MAX);
 		return 1;
 	}
 
@@ -323,90 +322,57 @@ int lpipe_burst(lua_State* L)
 	g_TotalMemory += sizeof(u32) * Pipe->TimeBinMax;
 
 	// new microburst time bin set 
-	printf("[%-40s] set TimeBucket %lli nsec Memory:%.2fMB\n", Pipe->Name, Pipe->TimeBinNS, g_TotalMemory/(float)kMB(1) );
-
-	return 0;
-}
-
-//-------------------------------------------------------------------------------------------------
-// create the output file 
-int lpipe_output(lua_State* L)
-{
-	/// pipeline to update
-	u32 Index = lua_tonumber(L, -2);	
-	Pipeline_t* Pipe = s_PipelineList[ Index ];
-
-	// get BPF string from config file
-	const u8* FileName = lua_tostring(L, -1);	
-	strncpy(Pipe->OutputFileName, FileName, sizeof(Pipe->OutputFileName) );
-
-	// atteempt to open the filename
-	Pipe->OutputFile = fopen(Pipe->OutputFileName, "a+");
-	if (!Pipe->OutputFile)
-	{
-		printf("[%-40s] ERROR: failed to create output filename (%s)\n", Pipe->OutputFileName);
-
-		lua_pushnumber(L, 1);
-		return 1;
-	}
-	printf("[%-40s] created output filename (%s)\n", Pipe->Name, Pipe->OutputFileName);
-
-	fprintf(Pipe->OutputFile, "# BPF Expression: (%s)\n", Pipe->BPF);
-	fprintf(Pipe->OutputFile, "# Burst Bucket  : %16lli nsec\n", Pipe->TimeBinNS);
-	fprintf(Pipe->OutputFile, "# Output Time   : %16lli nsec\n", Pipe->OutputNS);
-	fprintf(Pipe->OutputFile, "# -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
-
-	fprintf(Pipe->OutputFile, "# %32s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s, %20s\n",
-			"Time", 
-			"EpochNS", 
-			"Packets", 
-			"Bytes", 
-			"BurstMax(Mbps)", 
-			"RateMean(Mbps)", 
-			"PctTotal(Mbps)",
-			"BurstMax(Pps)", 
-			"RateMean(Pps)", 
-			
-			"RMON1_runt",
-			"RMON1_64",
-			"RMON1_64-127",
-			"RMON1_128-255",
-			"RMON1_256-511",
-			"RMON1_512-1023",
-			"RMON1_1024-1518",
-			"RMON1_1024-2047",
-			"RMON1_2048-4095",
-			"RMON1_4096-8191",
-			"RMON1_8192",
-
-			"TCP.FIN",
-			"TCP.SYN",
-			"TCP.RST",
-			"TCP.ACK",
-			"TCP.PSH"
-	);
-	fflush(Pipe->OutputFile);
+	fprintf(stderr, "[%-40s] set TimeBucket %lli nsec Memory:%.2fMB\n", Pipe->Name, Pipe->TimeBinNS, g_TotalMemory/(float)kMB(1) );
 
 	return 0;
 }
 
 //-------------------------------------------------------------------------------------------------
 // set the global output rate 
-int lpipe_output_time(lua_State* L)
+int Pipe_SetUpdateRate(double OutputNS)
 {
-	// get BPF string from config file
-	u64 OutputNS = lua_tonumber(L, -1);	
-
 	if (OutputNS > 60e9)
 	{
-		printf("[%-40s] ERROR: Maximum output rate is 60sec\n", ""); 
+		fprintf(stderr, "[%-40s] ERROR: Maximum output rate is 60sec\n", ""); 
 		return 1;	
 	}
 
-	printf("[%-40s] Set Global output rate to %.3f sec\n", "", OutputNS/1e9);
+	fprintf(stderr, "Set Global output rate to %.3f sec\n", OutputNS/1e9);
 	g_OutputTimeNS = OutputNS;
 
 	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// renames the capture name 
+void Pipe_SetCaptureName(u8* CaptureName)
+{
+	sprintf(g_CaptureName, "%s", CaptureName); 
+
+	fprintf(stderr, "Update CaptureName [%s]\n", g_CaptureName);
+}
+
+//-------------------------------------------------------------------------------------------------
+// set output object 
+int Pipe_SetOutput(struct Output_t* O)
+{
+	s_Output = O;
+
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// set number of worker threads and mapping 
+void Pipe_SetCPUWorker(int CPUCnt, u32* CPUMap)
+{
+	fprintf(stderr, "   Pipe Woker CPU Cnt %i [", CPUCnt);
+	g_CPUWorkerCnt = CPUCnt;
+	for (int i=0; i < CPUCnt; i++)
+	{
+		fprintf(stderr, "%i ", CPUMap[i]);
+		g_CPUWorker[i] = CPUMap[i];
+	}
+	fprintf(stderr, "]\n");
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -490,8 +456,8 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	u64 BytesMin = 1e12;
 	u64 BytesMax = 0;
 
-	u64 PktMin = 1e12;
-	u64 PktMax = 0;
+	u64 PktMin 	= 1e12;
+	u64 PktMax 	= 0;
 
 	u64 ByteS0	= 0;
 	u64 ByteS1	= 0;
@@ -534,38 +500,36 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	u8 DateTime[128];
 	ns2str(DateTime, LastTS);
 
-	fprintf(Pipe->OutputFile, "%32s, %20lli, %20lli, %20lli, %20.3f, %20.3f, %20.6f, %20lli, %20lli, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i, %20i\n",
-			DateTime,	
-			LastTS,
-			Pipe->Stats.TotalPkt,
-			Pipe->Stats.TotalByte,
-			BpsMax/1e6,	
-			BpsMean/1e6,
-			BytePct,
+	// append to the output block
 
-			PpsMax,	
-			PpsMean,
-		
-			Pipe->Stats.Time.RMON1[RMON1_RUNT],
-			Pipe->Stats.Time.RMON1[RMON1_64],
-			Pipe->Stats.Time.RMON1[RMON1_64_127],
-			Pipe->Stats.Time.RMON1[RMON1_128_255],
-			Pipe->Stats.Time.RMON1[RMON1_256_511],
-			Pipe->Stats.Time.RMON1[RMON1_512_1023],
-			Pipe->Stats.Time.RMON1[RMON1_1024_1518],
-			Pipe->Stats.Time.RMON1[RMON1_1024_1518] + Pipe->Stats.Time.RMON1[RMON1_1519_2047],
-			Pipe->Stats.Time.RMON1[RMON1_2048_4095],
-			Pipe->Stats.Time.RMON1[RMON1_4096_8191],
-			Pipe->Stats.Time.RMON1[RMON1_8192],
+	u8* JSON = s_JSONLine;
 
-			Pipe->Stats.TCPCnt_FIN,
-			Pipe->Stats.TCPCnt_SYN,
-			Pipe->Stats.TCPCnt_RST,
-			Pipe->Stats.TCPCnt_ACK,
-			Pipe->Stats.TCPCnt_PSH
-	);
+	// include bulk upload header
+	JSON += sprintf(JSON, "{\"index\":{\"_index\":\"%s\",\"_score\":null}}\n", g_CaptureName);
 
-	fflush(Pipe->OutputFile);
+	// JSON line
+	JSON += sprintf(JSON, "{");
+	JSON += sprintf(JSON, "\"Name\":\"%s\",", 		Pipe->Name);				// name of the pipeline from config 
+	JSON += sprintf(JSON, "\"timestamp\":%lli,", 	LastTS / 1000000ULL);				// timestamp must be in msec
+	JSON += sprintf(JSON, "\"TotalPkt\":%lli,", 	Pipe->Stats.TotalPkt); 
+	JSON += sprintf(JSON, "\"TotalByte\":%lli,", 	Pipe->Stats.TotalByte); 
+	JSON += sprintf(JSON, "\"BytePct\":%f,", 		BytePct); 
+
+	JSON += sprintf(JSON, "\"BpsMax\":%lli,",  		BpsMax);
+	JSON += sprintf(JSON, "\"BpsMean\":%lli,",  	BpsMean);
+
+	JSON += sprintf(JSON, "\"PpsMax\":%lli,",  		PpsMax);
+	JSON += sprintf(JSON, "\"PpsMean\":%lli",  		PpsMean);
+
+	// append any user defined JSON fields 
+	if (Pipe->OutputJSON != NULL)
+	{
+		JSON += sprintf(JSON, ",%s",  		Pipe->OutputJSON);
+	}
+
+	JSON += sprintf(JSON, "}\n");
+
+	s_JSONLine = JSON;
 
 	// reset the time buckets
 	memset(Pipe->Stats.Time.BinPkt,  0, sizeof(u32) * Pipe->TimeBinMax );
@@ -578,8 +542,9 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	memset(&Pipe->Stats.Time.RMON1, 0, sizeof(Pipe->Stats.Time.RMON1) );
 
 	// total stats are cumulative
-	Pipe->Stats.TotalPkt = 0;
-	Pipe->Stats.TotalByte = 0;
+	Pipe->Stats.TotalPkt 	= 0;
+	Pipe->Stats.TotalByte 	= 0;
+	Pipe->Stats.AllByte 	= 0;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -592,8 +557,11 @@ void Pipeline_Close(Pipeline_t* Pipe, u64 LastTS)
 
 //-------------------------------------------------------------------------------------------------
 // pipeline aggregate any stats generated
-static void Pipeline_StatsAggregate(Pipeline_t* P)
+static bool Pipeline_StatsAggregate(Pipeline_t* P)
 {
+	// assume JSON entry is being output
+	bool IsFlush = false; 
+
 	for (int j=0; j < 512; j++)
 	{
 		// free anything
@@ -620,14 +588,14 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 			__sync_fetch_and_add(&P->QueueDepth, -1);
 
 			// set last TS
-			P->Stats.LastTS			= Stats->LastTS; 
+			P->Stats.LastTS							= Stats->LastTS; 
 
 			// update stats
-			P->Stats.TotalPkt		+= Stats->TotalPkt;
-			P->Stats.TotalByte		+= Stats->TotalByte;
+			P->Stats.TotalPkt						+= Stats->TotalPkt;
+			P->Stats.TotalByte						+= Stats->TotalByte;
 			
-			P->Stats.AllPkt			+= Stats->AllPkt;
-			P->Stats.AllByte		+= Stats->AllByte;
+			P->Stats.AllPkt							+= Stats->AllPkt;
+			P->Stats.AllByte						+= Stats->AllByte;
 
 			// update rmon stats
 			P->Stats.Time.RMON1[RMON1_RUNT] 		+= Stats->Time.RMON1[RMON1_RUNT];
@@ -661,6 +629,7 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 			// write log 
 			if (Stats->IsFlush)
 			{
+				IsFlush = true;
 				Pipeline_WriteLog(P, P->Stats.LastTS);
 			}
 
@@ -677,6 +646,8 @@ static void Pipeline_StatsAggregate(Pipeline_t* P)
 		// nothing more to update?
 		if (UpdateCnt == 0) break;
 	}
+
+	return IsFlush;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -992,7 +963,7 @@ void* PktBlock_Worker(void* User)
 {
 	u32 CPUID = __sync_fetch_and_add(&g_CPUActive, 1);
 
-	printf("Start PktBlock Worker: %i\n", CPUID);
+	fprintf(stderr, "Start PktBlock Worker: %i\n", CPUID);
 	while (!g_Exit)
 	{
 		u64 TSC0 = rdtsc();
@@ -1027,6 +998,19 @@ int Parse_Start(void)
 {
 	u64 StartTS					= clock_ns();
 	u64 PCAPOffset				= 0;
+
+	// get the hosts name
+	gethostname(g_DeviceName, sizeof(g_DeviceName));	
+
+	u8 ClockStr[128];
+	clock_str(ClockStr, clock_date() );
+
+	// if capture name not written by config
+	if (g_CaptureName[0] == 0)
+	{
+		sprintf(g_CaptureName, "%s-bpfcounter_%s", g_DeviceName, ClockStr); 
+	}
+
 
 	FILE* FIn = stdin; 
 	assert(FIn != NULL);
@@ -1103,12 +1087,11 @@ int Parse_Start(void)
 
 	// create BPF processing threads
 	u32 CPUCnt = 0;
-	pthread_create(&s_PktBlockThread[0], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	pthread_create(&s_PktBlockThread[1], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	pthread_create(&s_PktBlockThread[2], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	pthread_create(&s_PktBlockThread[3], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	//pthread_create(&s_PktBlockThread[4], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
-	//pthread_create(&s_PktBlockThread[5], NULL, PktBlock_Worker, (void*)NULL); CPUCnt++;
+	for (int i=0; i < g_CPUWorkerCnt; i++)
+	{
+		pthread_create(&s_PktBlockThread[i], NULL, PktBlock_Worker, (void*)NULL); 
+		CPUCnt++;
+	}
 
 	// set the main thread cpu
 	cpu_set_t Thread0CPU;
@@ -1285,11 +1268,22 @@ int Parse_Start(void)
 		//PktBlock_Process(0, PktBlock);
 		//PktBlock_Free(PktBlock);
 
+		// reset the JSON Output block 
+		s_JSONLine = s_JSONBuffer;
+
 		// aggreate pipeline stats
 		fProfile_Start(1, "Aggregate");
+		bool IsFlush = false;
 		for (int i=0; i < s_PipelinePos; i++)
 		{
-			Pipeline_StatsAggregate(s_PipelineList[i]);
+			IsFlush |= Pipeline_StatsAggregate(s_PipelineList[i]);
+		}
+
+		// if JSON buffer was written to then kick it
+		if (IsFlush)
+		{
+			u32 Length = s_JSONLine - s_JSONBuffer;
+			Output_BufferAdd(s_Output, s_JSONBuffer, Length, 1);
 		}
 		fProfile_Stop(1);
 
@@ -1375,25 +1369,3 @@ int Parse_Start(void)
 	return 0;
 }
 
-static void lua_register_pipe(lua_State* L, const char* FnName, lua_CFunction Func)
-{
-	lua_getglobal(L, "pipe");
-	assert(!lua_isnil(L, -1));
-
-	lua_pushcfunction(L, Func);
-	lua_setfield(L, -2, FnName); 
-}
-
-//-------------------------------------------------------------------------------------------------
-
-void Parse_Open(lua_State* L)
-{
-	lua_newtable(L);
-	lua_setglobal(L, "pipe");
-
-	lua_register_pipe(L, "create",			lpipe_create);
-	lua_register_pipe(L, "bpf",				lpipe_bpfset);
-	lua_register_pipe(L, "burst",			lpipe_burst);
-	lua_register_pipe(L, "output",			lpipe_output);
-	lua_register_pipe(L, "output_time",		lpipe_output_time);
-}

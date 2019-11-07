@@ -1,22 +1,162 @@
-SetUpdateRate = function(Rate)
+local ffi = require("ffi")
 
-	pipe.output_time(Rate)
+ffi.cdef[[
 
+
+	struct Output_t;
+
+	struct Output_t* Output_Create(	bool IsNULL, 
+									bool IsSTDOUT, 
+									bool IsESOut, 	
+									bool IsCompress, 
+									bool IsESNULL, 
+									u32 Output_BufferCnt, 
+									u32 Output_KeepAlive, 
+									double Output_KeepAliveTimeout, 
+									u32 Output_FilterPath, 
+									u8* QueuePath, 
+									u32 ThreadCnt,
+									u32* CPUMap);
+
+	void Output_ESHostAdd(struct Output_t* Out, u8* HostName, u32 HostPort);
+
+
+
+	// pipeline status
+
+	struct Pipeline_t;
+	struct Pipeline_t* 		Pipe_Create			(u8* Name);
+	int 					Pipe_SetBPF			(struct Pipeline_t* Pipe, u8* BPFString);
+	int 					Pipe_SetBurstTime	(struct Pipeline_t* Pipe, double TimeBucketNS);
+	int 					Pipe_SetUpdateRate	(double OutputNS);
+	void					Pipe_SetOutput		(struct Output_t* Output);
+	void 					Pipe_SetCaptureName	(u8* CaptureName);
+	void 					Pipe_SetCPUWorker	(int CPUCnt, u32* CPUMap);
+
+
+]]
+
+local Output_IsNULL 		= false;
+local Output_IsSTDOUT 		= false;
+local Output_IsESPUSH 		= false;
+local Output_IsCompress 	= false;
+local Output_IsESNULL 		= false;
+
+local Output_IsCompress 	= false;
+local Output_IsESNULL 		= false;
+
+local Output_ESHostList 	= {};
+local Output_ThreadCnt		= 32
+local Output_CPUMapList 	= {0, 1, 2, 3, 4, 5, 6, 7};
+
+local Output_KeepAlive			= true;
+local Output_KeepAliveTimeout	= 10e9;
+local Output_FilterPath			= true;
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- sets what kind of output mode to use
+Output_Mode= function(Mode)
+
+	if (Mode == "NULL") then
+		Output_IsNULL = true;
+	end	
+	if (Mode == "STDOUT") then
+		Output_IsSTDOUT = true;
+	end	
+	if (Mode == "ESPUSH") then
+		Output_IsESPUSH = true;
+	end	
 end
 
-CreatePipeline = function(Info)
+-----------------------------------------------------------------------------------------------------------------------------------
+-- sets the output thread cpu mapping
+Output_CPUMap = function(CPUMap)
+
+	Output_CPUMapList = CPUMap
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- add an ES host output
+Output_ESHost = function(Host, Port)
+
+	table.insert(Output_ESHostList, { Host = Host, Port = Port })
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- creates the output backend
+Output_Create = function(Mode)
+
+
+	local _CPUMap = ffi.new("int[128]", Output_CPUMapList) 
+
+	local Output = ffi.C.Output_Create(	Output_IsNULL, 
+										Output_IsSTDOUT, 
+										Output_IsESPUSH, 
+										Output_IsCompress, 
+										Output_IsESNULL, 
+										64, 
+										Output_KeepAlive,
+										Output_KeepAliveTimeout,
+										Output_FilterPath,
+										nil,
+										Output_ThreadCnt,
+										_CPUMap);
+
+	-- add any ES Hosts
+	for i,Info in ipairs(Output_ESHostList) do
+
+		ffi.C.Output_ESHostAdd(Output, ffi.cast("u8*", Info.Host), Info.Port)
+	end
+
+	return Output
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- PCAP snapshot period
+Global_UpdateRate = function(Rate)
+
+	ffi.C.Pipe_SetUpdateRate(Rate);
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- sets the capture name 
+Global_CaptureName = function(Name)
+
+	ffi.C.Pipe_SetCaptureName( ffi.cast("u8*", Name) );
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- sets the output thread cpu mapping
+Pipe_CPUMap = function(CPUMap)
+
+	local _CPUMap = ffi.new("int[128]", CPUMap)
+	ffi.C.Pipe_SetCPUWorker( #CPUMap, _CPUMap);
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Pipe_Create = function(Info)
+
+	-- create output object if it has not been created yet
+	if (Output == nil) then
+		Output = Output_Create()
+
+		-- set the output device to use
+		ffi.C.Pipe_SetOutput(Output);
+	end
 
 	-- create the pipeline
-	local Index = pipe.create(Info.Name)
+	local Pipe = ffi.C.Pipe_Create( ffi.cast("u8*", Info.Name))
 
 	-- set the BPF expression
-	if (pipe.bpf(Index, Info.BPF) != nil) then
+	if (ffi.C.Pipe_SetBPF(Pipe, ffi.cast("u8*", Info.BPF)) != nil) then
 		return
 	end
 
 	-- set burst rate (if passed) 
 	if (tonumber(Info.BurstTime) != nil) then
-		pipe.burst(Index, tonumber(Info.BurstTime))
+		ffi.C.Pipe_SetBurstTime(Pipe, tonumber(Info.BurstTime))
 	end
 
 	-- open the output file 
@@ -25,7 +165,10 @@ CreatePipeline = function(Info)
 			d.year,
 			d.month,
 			d.day)
-	if (pipe.output(Index, FileName) != nil) then
+	if (pipe.output(Index, Info.Name, Info.JSON) != nil) then
+
+
+
 		return
 	end
 	

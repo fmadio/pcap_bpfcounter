@@ -1,12 +1,14 @@
 OBJS =
 OBJS += parser.o
 OBJS += fProfile.o
+OBJS += output.o
 
 LOBJS =
 LOBJS += lmain.o
 
 DEF = 
-DEF += -O3 
+DEF += -g
+DEF += -O1
 DEF += --std=c99 
 DEF += -I../
 DEF += -I./luajit/src
@@ -22,6 +24,7 @@ LDFLAG =
 LDFLAG += -lm
 LDFLAG += -lc
 LDFLAG += -lpthread
+LDFLAG += -g
 
 %.o: %.c
 	gcc $(DEF) -c -o $@ -g $<
@@ -32,9 +35,12 @@ LDFLAG += -lpthread
 all: $(LIBS) $(OBJS) $(LOBJS)
 	gcc $(DEF) -c -o main.o -g main.c
 	gcc $(LDFLAG) -o pcap_bpfcounter main.o $(OBJS) $(LIBS) lmain.o
+	./MapGen.lua pcap_bpfcounter
+	cat symbol.bin >> pcap_bpfcounter
 
 clean:
 	rm -f $(OBJS)
 	rm -f $(LOBJS)
 	rm -f pcap_bpfcounter 
+	rm -f symbol.bin 
 

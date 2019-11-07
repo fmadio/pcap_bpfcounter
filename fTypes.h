@@ -385,7 +385,7 @@ static inline void  ns2str(u8* Str, u64 TS)
 
 static inline void CycleCalibration(void)
 {
-    fprintf(stderr, "calibrating...\n");
+    //fprintf(stderr, "calibrating...\n");
     u64 StartTS[16];
     u64 EndTS[16];
 
@@ -406,12 +406,12 @@ static inline void CycleCalibration(void)
         CyclesSum2 += Cycles*Cycles;
         CyclesCnt++;
 
-        fprintf(stderr, "%i : %016llx %16.4f cycles/nsec\n", i, Cycles, Cycles / 1e9);
+        //fprintf(stderr, "%i : %016llx %16.4f cycles/nsec\n", i, Cycles, Cycles / 1e9);
     }
 
     double CyclesSec = CyclesSum / CyclesCnt;
     double CyclesStd = sqrt(CyclesCnt *CyclesSum2 - CyclesSum *CyclesSum) / CyclesCnt;
-    fprintf(stderr, "Cycles/Sec %12.4f Std:%8.fcycle std(%12.8f)\n", CyclesSec, CyclesStd, CyclesStd / CyclesSec);
+    //fprintf(stderr, "Cycles/Sec %12.4f Std:%8.fcycle std(%12.8f)\n", CyclesSec, CyclesStd, CyclesStd / CyclesSec);
 
 	// set global
 
