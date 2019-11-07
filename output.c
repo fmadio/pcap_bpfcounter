@@ -777,7 +777,7 @@ void BulkUpload(OutputThread_t *T, u32 BufferIndex, u32 BufferCnt, u32 CPUID)
 			// got all the data
 			if (RecvBufferLen >= TotalLength)
 			{
-				printf("recevied all data\n");
+				//printf("recevied all data\n");
 				break;
 			}
 		}
