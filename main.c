@@ -378,7 +378,7 @@ int main(int argc, char* argv[])
 	luaL_openlibs(L);
 
 	// initialize symbol table 
-	LoadLuaEnvironment("./pcap_bpfcounter");	
+	LoadLuaEnvironment(argv[0]);
 
 	// parse config options
 	lua_newtable(L);
