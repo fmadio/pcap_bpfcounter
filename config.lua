@@ -8,15 +8,15 @@ Global_CaptureName	("bpfcounter_test")
 
 -- select output mode
 --Output_Mode("NULL")
-Output_Mode("STDOUT")
---Output_Mode("ESPUSH")
+--Output_Mode("STDOUT")
+Output_Mode("ESPUSH")
 
 -- add some ES Hosts
-Output_ESHost("192.168.2.115", 9200) 
+Output_ESHost	("192.168.2.176", 9200) 
 
 -- CPU Mapping
-Output_CPUMap	({40, 41, 42, 43})
-Pipe_CPUMap		({44, 45, 46, 47})
+--Output_CPUMap	({40, 41, 42, 43})
+--Pipe_CPUMap		({44, 45, 46, 47})
 
 ----------------------------------------------------------------------------
 
@@ -26,14 +26,12 @@ Pipe_Create(
 	["Name"] 			= "everything",
 	["BPF"]  			= "",
 	["RE"]   			= "",
-	["JSON"] 			= '"EtherSrc":"asdf","EtherDst":"popopoop"',
-	["Output"] 			= "/mnt/remote0/cap0.stats",
+	["JSON"] 			= '"EtherSrc":"00:00:00:00:00:00","EtherDst":"11:11:11:11:11:11"',
 })
 
 Pipe_Create(
 {
 	["Name"] 			= "everything-tcp",
-	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "tcp",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		
@@ -42,7 +40,6 @@ Pipe_Create(
 Pipe_Create(
 {
 	["Name"] 			= "everything-udp",
-	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "udp",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		
@@ -51,7 +48,6 @@ Pipe_Create(
 Pipe_Create(
 {
 	["Name"] 			= "base4",
-	["Output"] 			= "/mnt/remote0/cap0.stats",
 	["BPF"]  			= "host 192.168.2.136",
 	["RE"]   			= "",
 	["BurstTime"]		= 100e3,		

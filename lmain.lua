@@ -32,6 +32,7 @@ ffi.cdef[[
 	void					Pipe_SetOutput		(struct Output_t* Output);
 	void 					Pipe_SetCaptureName	(u8* CaptureName);
 	void 					Pipe_SetCPUWorker	(int CPUCnt, u32* CPUMap);
+	void 					Pipe_SetUserJSON	(struct Pipeline_t* Pipe, u8* UserJSON);
 
 
 ]]
@@ -46,7 +47,7 @@ local Output_IsCompress 	= false;
 local Output_IsESNULL 		= false;
 
 local Output_ESHostList 	= {};
-local Output_ThreadCnt		= 32
+local Output_ThreadCnt		= 32 
 local Output_CPUMapList 	= {0, 1, 2, 3, 4, 5, 6, 7};
 
 local Output_KeepAlive			= true;
@@ -136,6 +137,7 @@ end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 
+
 Pipe_Create = function(Info)
 
 	-- create output object if it has not been created yet
@@ -150,7 +152,7 @@ Pipe_Create = function(Info)
 	local Pipe = ffi.C.Pipe_Create( ffi.cast("u8*", Info.Name))
 
 	-- set the BPF expression
-	if (ffi.C.Pipe_SetBPF(Pipe, ffi.cast("u8*", Info.BPF)) != nil) then
+	if (ffi.C.Pipe_SetBPF(Pipe, ffi.cast("u8*", Info.BPF)) < 0 ) then
 		return
 	end
 
@@ -159,17 +161,9 @@ Pipe_Create = function(Info)
 		ffi.C.Pipe_SetBurstTime(Pipe, tonumber(Info.BurstTime))
 	end
 
-	-- open the output file 
-	local d = os.ns2clock( os.clock_ns() )  
-	local FileName = string.format(Info.Output.."/%04i-%02i-%02i-"..Info.Name,
-			d.year,
-			d.month,
-			d.day)
-	if (pipe.output(Index, Info.Name, Info.JSON) != nil) then
-
-
-
-		return
+	-- if user specified JSON is added
+	if (Info.JSON != nil) then
+		ffi.C.Pipe_SetUserJSON(Pipe, ffi.cast("u8*", Info.JSON))
 	end
 	
 

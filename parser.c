@@ -102,8 +102,6 @@ typedef struct Pipeline_t
 	u8						Name[256];					// string name of the expression
 
 	// output files
-	u8						OutputFileName[1024];		// full path of output name
-	FILE*					OutputFile;					// file handle to write
 	u64						OutputNS;					// nanos between outputs 
 	u8*						OutputJSON;					// additional JSON line settings 
 
@@ -326,6 +324,18 @@ int Pipe_SetBurstTime(struct Pipeline_t* Pipe, double TimeBucketNS)
 
 	return 0;
 }
+
+
+//-------------------------------------------------------------------------------------------------
+// set any user defined JSON 
+void Pipe_SetUserJSON(struct Pipeline_t* Pipe, u8* UserJSON)
+{
+	// inlcude user defined JSON in the bulk upload 
+	Pipe->OutputJSON = strdup(UserJSON);
+
+	fprintf(stderr, "[%-40s] User JSON \"%s\"\n", Pipe->Name, UserJSON);
+}
+
 
 //-------------------------------------------------------------------------------------------------
 // set the global output rate 
@@ -551,8 +561,6 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 // close 
 void Pipeline_Close(Pipeline_t* Pipe, u64 LastTS)
 {
-	fclose(Pipe->OutputFile);
-	Pipe->OutputFile = NULL;
 }
 
 //-------------------------------------------------------------------------------------------------
