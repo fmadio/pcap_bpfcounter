@@ -744,8 +744,11 @@ void BulkUpload(OutputThread_t *T, u32 BufferIndex, u32 BufferCnt, u32 CPUID)
 			int rlen = recv(T->Sock, RecvBuffer + RecvBufferLen, TotalLength - RecvBufferLen, 0);
 			if (rlen <= 0) break;
 
+			// dump the recv buffer
+			//printf("%s\n", RecvBuffer);
+
 			// if content length has been parsed yet
-			if (TotalLength == RecvBufferMax)
+			if (TotalLength > 1024)
 			{
 				// attempt parse the HTTP reply to get content length 
 				u8* ContentLengthStr = strstr(RecvBuffer, "content-length:");
@@ -769,7 +772,14 @@ void BulkUpload(OutputThread_t *T, u32 BufferIndex, u32 BufferCnt, u32 CPUID)
 				}
 			}
 			RecvBufferLen += rlen;
-			//printf("rlen: %i\n", rlen);
+			//printf("rlen: %i %i\n", rlen, TotalLength);
+
+			// got all the data
+			if (RecvBufferLen >= TotalLength)
+			{
+				printf("recevied all data\n");
+				break;
+			}
 		}
 		//fprintf(stderr, "[%i] RecvLen: %i TotalLengh:%i \n", BufferIndex, RecvBufferLen, TotalLength);
 
@@ -854,12 +864,16 @@ void BulkUpload(OutputThread_t *T, u32 BufferIndex, u32 BufferCnt, u32 CPUID)
 		}
 		if (s_Output_Keepalive == true)
 		{
-			// read all the data from Sock otherwise it may hurt the subsequent send
-			u8 tmp[10240];
-			while (1)
+			// if the full payload was not processed
+			if (RecvBufferLen != TotalLength)
 			{
-				int rlen = recv(T->Sock, tmp, sizeof(tmp), 0);
-				if (rlen <= 0) break;
+				// read all the data from Sock otherwise it may hurt the subsequent send
+				u8 tmp[10240];
+				while (1)
+				{
+					int rlen = recv(T->Sock, tmp, sizeof(tmp), 0);
+					if (rlen <= 0) break;
+				}
 			}
 		}
 		else
@@ -872,7 +886,6 @@ void BulkUpload(OutputThread_t *T, u32 BufferIndex, u32 BufferCnt, u32 CPUID)
 
 	u64 TSC3 = rdtsc();
 	Out->WorkerTSCRecv[CPUID] += TSC3 - TSC2;
-
 
 	// update histogram 
 	float dTSTx  = tsc2ns(TSC2 - TSC1);
