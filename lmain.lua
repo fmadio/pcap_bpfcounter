@@ -115,6 +115,14 @@ Output_ESHost = function(Host, Port)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
+-- Set Keep Alive setting 
+Output_ESKeepAlive = function(Enable, Timeout)
+
+	Output_KeepAlive 		= Enable
+	Output_KeepAliveTimeout = Timeout 
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
 -- creates the output backend
 Output_Create = function(Mode)
 

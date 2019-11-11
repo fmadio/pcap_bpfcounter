@@ -523,6 +523,7 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 	JSON += sprintf(JSON, "\"timestamp\":%lli,", 	LastTS / 1000000ULL);				// timestamp must be in msec
 	JSON += sprintf(JSON, "\"TotalPkt\":%lli,", 	Pipe->Stats.TotalPkt); 
 	JSON += sprintf(JSON, "\"TotalByte\":%lli,", 	Pipe->Stats.TotalByte); 
+	JSON += sprintf(JSON, "\"TotalBits\":%lli,", 	Pipe->Stats.TotalByte * 8); 
 	JSON += sprintf(JSON, "\"BytePct\":%f,", 		BytePct); 
 
 	JSON += sprintf(JSON, "\"BpsMax\":%lli,",  		BpsMax);

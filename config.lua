@@ -11,6 +11,9 @@ Global_CaptureName	("bpfcounter_test")
 --Output_Mode("STDOUT")
 Output_Mode("ESPUSH")
 
+-- set 1sec keep alive
+Output_ESKeepAlive(true, 1e9)
+
 -- add some ES Hosts
 Output_ESHost	("192.168.2.176", 9200) 
 
