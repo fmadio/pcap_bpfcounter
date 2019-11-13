@@ -28,6 +28,7 @@ ffi.cdef[[
 	int 					Pipe_SetUpdateRate	(double OutputNS);
 	void					Pipe_SetOutput		(struct Output_t* Output);
 	void 					Pipe_SetCaptureName	(u8* CaptureName);
+	void 					Pipe_SetCPUCore		(int CPU); 
 	void 					Pipe_SetCPUWorker	(int CPUCnt, u32* CPUMap);
 	void 					Pipe_SetUserJSON	(struct Pipeline_t* Pipe, u8* UserJSON);
 
@@ -58,6 +59,12 @@ local Pipe_CPUMapList 			= {}
 -----------------------------------------------------------------------------------------------------------------------------------
 -- setup default cpu maps based on command line args 
 for i,j in ipairs(ARGV) do
+
+	-- cpu core cpu 
+	if (j == "--cpu-core") then 
+		local CPU = tonumber( ARGV[i + 1] ) 
+		ffi.C.Pipe_SetCPUCore(CPU)
+	end
 
 	-- cpu pipe workers assignment
 	if (j == "--cpu-pipe") then 

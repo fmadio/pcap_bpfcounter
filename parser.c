@@ -188,6 +188,10 @@ u8						g_DeviceName[256];
 
 bool 					g_Verbose			= false;
 
+static u64				s_PipeWorkerCPUTotal[128];		// total cpu cycles for the worker
+static u64				s_PipeWorkerCPU[128];			// cpu cycles spent operating on data 
+static volatile bool	s_PipeWorkerCPUReset[128];		// request to reset the stats 
+
 
 static struct Output_t*	s_Output			= NULL;		// output interface to use 
 
@@ -369,6 +373,15 @@ int Pipe_SetOutput(struct Output_t* O)
 	s_Output = O;
 
 	return 0;
+}
+
+
+//-------------------------------------------------------------------------------------------------
+// set cpu core 
+void Pipe_SetCPUCore(int CPU) 
+{
+	g_CPUCore = CPU;
+	fprintf(stderr, "   Pipe Core CPU %i\n", g_CPUCore);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -981,22 +994,37 @@ void* PktBlock_Worker(void* User)
 		if (Get == s_PacketBlockPut)
 		{
 			usleep(0);
-			continue;
+		}
+		else
+		{
+			// consume this block 
+			if (__sync_bool_compare_and_swap(&s_PacketBlockGet, Get, Get + 1))
+			{
+				u64 TSC2 = rdtsc();
+
+				// block to process 
+				PacketBlock_t* PktBlock = s_PacketBlockRing[ Get & s_PacketBlockMsk ];
+
+				// run bpf filters on the block 
+				PktBlock_Process(CPUID, PktBlock);
+
+				// free the block
+				PktBlock_Free(PktBlock);
+
+				// profiling
+				u64 dTSC = rdtsc() - TSC2;
+				s_PipeWorkerCPU[CPUID] += dTSC;
+			}
 		}
 
-		// consume this block 
-		if (__sync_bool_compare_and_swap(&s_PacketBlockGet, Get, Get + 1))
+		// total CPU cycles worker has used
+		u64 dTSC = rdtsc() - TSC0;
+		s_PipeWorkerCPUTotal[CPUID] += dTSC;
+		if (s_PipeWorkerCPUReset[CPUID])
 		{
-			// block to process 
-			PacketBlock_t* PktBlock = s_PacketBlockRing[ Get & s_PacketBlockMsk ];
-
-			// run bpf filters on the block 
-			PktBlock_Process(CPUID, PktBlock);
-
-			// free the block
-			PktBlock_Free(PktBlock);
-
-			u64 TSC1 = rdtsc();
+			s_PipeWorkerCPUReset[CPUID] = false;
+			s_PipeWorkerCPU[CPUID] 		= 0;
+			s_PipeWorkerCPUTotal[CPUID] = 0;
 		}
 	}
 }
@@ -1312,7 +1340,18 @@ int Parse_Start(void)
 
 			u32 QueueDepth = s_PipelineList[0]->QueueDepth;
 
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i\n", 
+			// aggregat stats
+			u64 WorkerTotal = 0;
+			u64 WorkerUsed 	= 0;
+			for (int i=0; i < g_CPUWorkerCnt; i++)
+			{
+				WorkerTotal += s_PipeWorkerCPUTotal[i]; 
+				WorkerUsed 	+= s_PipeWorkerCPU[i]; 
+
+				s_PipeWorkerCPUReset[i]	= true;
+			}
+			float WorkerCPU = WorkerUsed * inverse(WorkerTotal);
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f\n", 
 						dT / (60*60), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
@@ -1322,7 +1361,8 @@ int Parse_Start(void)
 						StreamCAT_CPUFetch,
 						StreamCAT_CPUSend,
 						
-						QueueDepth);
+						QueueDepth,
+						WorkerCPU);
 			fflush(stderr);
 			fflush(stdout);
 
