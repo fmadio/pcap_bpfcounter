@@ -952,7 +952,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 		LastTS 		= Pkt->TS;
 
 		// write the per filter log files
-		if (PktBlock->IsOutput && (LastTS > PktBlock->OutputTS))
+		if (PktBlock->IsOutput && (LastTS >= PktBlock->OutputTS))
 		{
 			// kick once 
 			PktBlock->IsOutput = false; 
@@ -1376,6 +1376,29 @@ int Parse_Start(void)
 		fProfile_Stop(0);
 	}
 
+	// inert an EOS block 
+	u32 SeqNoFinal = SeqNo;
+	{
+
+		PacketBlock_t* PktBlock = PktBlock_Allocate();
+
+		PktBlock->SeqNo			= SeqNo++;
+		PktBlock->PktCnt		= 0;
+		PktBlock->ByteWire		= 0;
+		PktBlock->ByteCapture	= 0;
+
+		PktBlock->TSFirst 		= NextOutputTS;
+		PktBlock->TSLast 		= NextOutputTS;
+
+		PktBlock->IsOutput		= false;
+		PktBlock->OutputTS 		= NextOutputTS;
+
+		// push to processing queue
+		s_PacketBlockRing[ s_PacketBlockPut & s_PacketBlockMsk ] = PktBlock;
+		s_PacketBlockPut++;
+	}
+
+
 	// wait for all blocks have completed
 	while (s_PacketBlockGet != s_PacketBlockPut)
 	{
@@ -1392,15 +1415,31 @@ int Parse_Start(void)
 	// aggreate after final processing 
 	for (int i=0; i < s_PipelinePos; i++)
 	{
-		Pipeline_StatsAggregate(s_PipelineList[i]);
+		// find the final stats for the pipline
+		Pipeline_t* P = s_PipelineList[i];
+		for (int cpu=0; cpu < g_CPUActive; cpu++)
+		{
+			PipelineStats_t* Stats = P->QueueHead[cpu];
+			if (!Stats) continue;
+
+			// if it the final seq number?
+			if (Stats->SeqNo == SeqNoFinal)
+			{
+				// force the pipes last stats time 
+				// to be the next output snapshot timestamp 
+				Stats->LastTS = NextOutputTS; 
+
+				// force output flush
+				Stats->IsFlush = true;
+			}
+		}
+		// aggregate stats from all CPUs 
+		Pipeline_StatsAggregate(P);
 	}
 
-	// flush any remaining stats 
-	for (int p=0; p < s_PipelinePos; p++)
-	{
-		Pipeline_t* Pipe = s_PipelineList[p];
-		Pipeline_WriteLog(Pipe, LastTS);
-	}
+	// generate the final JSON output 
+	u32 Length = s_JSONLine - s_JSONBuffer;
+	Output_BufferAdd(s_Output, s_JSONBuffer, Length, 1);
 
 	// flush pipe with last log
 	for (int p=0; p < s_PipelinePos; p++)
@@ -1408,6 +1447,10 @@ int Parse_Start(void)
 		Pipeline_t* Pipe = s_PipelineList[p];
 		Pipeline_Close(Pipe, LastTS);
 	}
+
+	// wait for final kick to finish
+	Output_Close(s_Output);
+
 
 	printf("TotalPktUnique : %10lli\n", TotalPktUnique);
 	printf("TotalPkt       : %10lli\n", TotalPkt);
