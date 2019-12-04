@@ -426,6 +426,7 @@ static PipelineStats_t* PipeStats_Alloc(u64 SeqNo)
 		usleep(0);
 		if (Timeout++ > 100e3)
 		{
+			printf("StatsFree: %p SeqNo:%i\n", s_PipeStatsFree, SeqNo);
 			for (int i=0; i < s_PipelinePos; i++)
 			{
 				Pipeline_t* Pipe = s_PipelineList[i];	
@@ -1378,6 +1379,7 @@ int Parse_Start(void)
 
 	// inert an EOS block 
 	u32 SeqNoFinal = SeqNo;
+	fprintf(stderr, "Final Seqno:%i\n", SeqNoFinal);
 	{
 
 		PacketBlock_t* PktBlock = PktBlock_Allocate();
@@ -1398,21 +1400,25 @@ int Parse_Start(void)
 		s_PacketBlockPut++;
 	}
 
-
 	// wait for all blocks have completed
+	fprintf(stderr, "Wait for Blocks to finish\n");
 	while (s_PacketBlockGet != s_PacketBlockPut)
 	{
 		usleep(1000);
 	}
 
+	// signal exit
+	fprintf(stderr, "Request Exit\n");
 	// signal threads to exit and wait 
 	g_Exit = true;
 	for (int i=0; i < CPUCnt; i++)
 	{
 		pthread_join(s_PktBlockThread[i], 0);
+		fprintf(stderr, "Worker thread join %i\n", i); 
 	}
 
 	// aggreate after final processing 
+	fprintf(stderr, "Final Aggregation\n");
 	for (int i=0; i < s_PipelinePos; i++)
 	{
 		// find the final stats for the pipline
@@ -1436,12 +1442,14 @@ int Parse_Start(void)
 		// aggregate stats from all CPUs 
 		Pipeline_StatsAggregate(P);
 	}
+	fprintf(stderr, "Wite Final JSON\n");
 
 	// generate the final JSON output 
 	u32 Length = s_JSONLine - s_JSONBuffer;
 	Output_BufferAdd(s_Output, s_JSONBuffer, Length, 1);
 
 	// flush pipe with last log
+	fprintf(stderr, "Pipeline Close\n");
 	for (int p=0; p < s_PipelinePos; p++)
 	{
 		Pipeline_t* Pipe = s_PipelineList[p];
@@ -1449,6 +1457,7 @@ int Parse_Start(void)
 	}
 
 	// wait for final kick to finish
+	fprintf(stderr, "Output Close\n");
 	Output_Close(s_Output);
 
 
