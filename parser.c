@@ -442,6 +442,7 @@ static PipelineStats_t* PipeStats_Alloc(u64 SeqNo)
 // pipeline stats free 
 static void PipeStats_Free(PipelineStats_t* PipeStats)
 {
+	assert(PipeStats != NULL);
 	sync_lock(&s_PktBlockLock, 100);
 	{
 		PipeStats->SeqNo	= 0;
@@ -1379,7 +1380,7 @@ int Parse_Start(void)
 
 	// inert an EOS block 
 	u32 SeqNoFinal = SeqNo;
-	fprintf(stderr, "Final Seqno:%i\n", SeqNoFinal);
+	fprintf(stderr, "Final Seqno:%i : %p\n", SeqNoFinal, s_PipeStatsFree);
 	{
 
 		PacketBlock_t* PktBlock = PktBlock_Allocate();
@@ -1404,17 +1405,21 @@ int Parse_Start(void)
 	fprintf(stderr, "Wait for Blocks to finish\n");
 	while (s_PacketBlockGet != s_PacketBlockPut)
 	{
-		usleep(1000);
+		// keep aggregating to gree up stats blocks
+		for (int i=0; i < s_PipelinePos; i++)
+		{
+			Pipeline_StatsAggregate(s_PipelineList[i]);
+		}
+		usleep(10e3);
 	}
 
-	// signal exit
-	fprintf(stderr, "Request Exit\n");
 	// signal threads to exit and wait 
+	fprintf(stderr, "Request Exit\n");
 	g_Exit = true;
 	for (int i=0; i < CPUCnt; i++)
 	{
 		pthread_join(s_PktBlockThread[i], 0);
-		fprintf(stderr, "Worker thread join %i\n", i); 
+		fprintf(stderr, "  BPF Worker thread join %i\n", i); 
 	}
 
 	// aggreate after final processing 
@@ -1457,6 +1462,7 @@ int Parse_Start(void)
 	}
 
 	// wait for final kick to finish
+	usleep(100e3);
 	fprintf(stderr, "Output Close\n");
 	Output_Close(s_Output);
 

@@ -961,7 +961,7 @@ void Output_Close(Output_t* Out)
 	fprintf(stderr, "Output Join\n");
 	for (int i=0; i < Out->CPUActiveCnt; i++)
 	{
-		fprintf(stderr, "  Worker %i\n", i);
+		fprintf(stderr, "  Output Worker  Join %i\n", i);
 		pthread_join(Out->PushThread[i], NULL);
 	}
 	fprintf(stderr, "Output Close\n");
@@ -1170,7 +1170,7 @@ static void* Output_Worker(void * user)
 	}
 	close(T->Sock);
 
-	fprintf(stderr, "   Output Worker: %i\n", CPUID);
+	fprintf(stderr, "   Output Worker exit: %i\n", CPUID);
 	return NULL;
 }
 
