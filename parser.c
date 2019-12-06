@@ -72,6 +72,7 @@ typedef struct PipelineStats_t
 	u64				SeqNo;							// packet block sequence no
 	bool			IsFlush;						// flush pipeline after updating
 
+	u64				OutputTS;						// timestamp of this output block 
 	u64				LastTS;							// TS of last packet hit
 	u64				AllPkt;							// total packets checked (inc BPF miss) 
 	u64				AllByte;						// used to calcuate raio of this BPF flow
@@ -445,15 +446,16 @@ static void PipeStats_Free(PipelineStats_t* PipeStats)
 	assert(PipeStats != NULL);
 	sync_lock(&s_PktBlockLock, 100);
 	{
-		PipeStats->SeqNo	= 0;
-		PipeStats->IsFlush	= false;
+		PipeStats->SeqNo		= 0;
+		PipeStats->IsFlush		= false;
+		PipeStats->OutputTS		= 0;
 
-		PipeStats->Time.BinCnt = 0;
+		PipeStats->Time.BinCnt 	= 0;
 
-		PipeStats->Time.Pkt = 0;
-		PipeStats->Time.Byte = 0;
-		PipeStats->AllPkt = 0;
-		PipeStats->AllByte = 0;
+		PipeStats->Time.Pkt 	= 0;
+		PipeStats->Time.Byte 	= 0;
+		PipeStats->AllPkt 		= 0;
+		PipeStats->AllByte 		= 0;
 		memset(&PipeStats->Time.RMON1, 0, sizeof(PipeStats->Time.RMON1) );
 
 		// clear tcp flag stats 
@@ -476,7 +478,7 @@ static void PipeStats_Free(PipelineStats_t* PipeStats)
 
 //-------------------------------------------------------------------------------------------------
 
-void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
+void Pipeline_WriteLog(Pipeline_t* Pipe, u64 OutputTS)
 {
 	u64 BytesMin = 1e12;
 	u64 BytesMax = 0;
@@ -522,11 +524,10 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 
 	float BytePct = Pipe->Stats.TotalByte * inverse(Pipe->Stats.AllByte);
 
-	u8 DateTime[128];
-	ns2str(DateTime, LastTS);
+	//u8 DateTime[128];
+	//ns2str(DateTime, LastTS);
 
 	// append to the output block
-
 	u8* JSON = s_JSONLine;
 
 	// include bulk upload header
@@ -534,8 +535,8 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 LastTS)
 
 	// JSON line
 	JSON += sprintf(JSON, "{");
-	JSON += sprintf(JSON, "\"Name\":\"%s\",", 		Pipe->Name);				// name of the pipeline from config 
-	JSON += sprintf(JSON, "\"timestamp\":%lli,", 	LastTS / 1000000ULL);				// timestamp must be in msec
+	JSON += sprintf(JSON, "\"Name\":\"%s\",", 		Pipe->Name);					// name of the pipeline from config 
+	JSON += sprintf(JSON, "\"timestamp\":%lli,", 	OutputTS / 1000000ULL);			// timestamp must be in msec
 	JSON += sprintf(JSON, "\"TotalPkt\":%lli,", 	Pipe->Stats.TotalPkt); 
 	JSON += sprintf(JSON, "\"TotalByte\":%lli,", 	Pipe->Stats.TotalByte); 
 	JSON += sprintf(JSON, "\"TotalBits\":%lli,", 	Pipe->Stats.TotalByte * 8); 
@@ -613,6 +614,7 @@ static bool Pipeline_StatsAggregate(Pipeline_t* P)
 
 			// set last TS
 			P->Stats.LastTS							= Stats->LastTS; 
+			P->Stats.OutputTS						= (Stats->OutputTS != 0) ? Stats->OutputTS : P->Stats.OutputTS; 
 
 			// update stats
 			P->Stats.TotalPkt						+= Stats->TotalPkt;
@@ -654,7 +656,7 @@ static bool Pipeline_StatsAggregate(Pipeline_t* P)
 			if (Stats->IsFlush)
 			{
 				IsFlush = true;
-				Pipeline_WriteLog(P, P->Stats.LastTS);
+				Pipeline_WriteLog(P, P->Stats.OutputTS);
 			}
 
 			// release back to pool
@@ -846,6 +848,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				u32 RMONIndex = Length2RMON1(Pkt->LengthWire);
 				PipeStats->Time.RMON1[RMONIndex]++;
 
+
 				// per protocol stats 
 				{
 					fEther_t* Ether = (fEther_t*)(Pkt + 1);	
@@ -963,6 +966,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			for (int p=0; p < s_PipelinePos; p++)
 			{
 				StatsList[p]->IsFlush = true;
+				StatsList[p]->OutputTS = PktBlock->OutputTS;
 
 				// queue stats 
 				Pipeline_QueueStats(s_PipelineList[p], StatsList[p], CPUID);
@@ -1276,7 +1280,9 @@ int Parse_Start(void)
 		if (PktBlock->TSLast > NextOutputTS)
 		{
 			PktBlock->IsOutput	= true;
-			PktBlock->OutputTS 	= NextOutputTS;
+			PktBlock->OutputTS 	= NextOutputTS - g_OutputTimeNS;			// timestamp is the START period 
+																			// of the snapshot. 
+																			//e.g. tiemstamp 09:00:00 contains packets betwen 09:00:00 -> 09:00:00.99999999999
 
 			// print every 60sec
 			// jump to next block, e.g if there are X periods of g_OutputTimeNS
@@ -1438,7 +1444,8 @@ int Parse_Start(void)
 			{
 				// force the pipes last stats time 
 				// to be the next output snapshot timestamp 
-				Stats->LastTS = NextOutputTS; 
+				Stats->LastTS 	= NextOutputTS; 
+				Stats->OutputTS	= NextOutputTS - g_OutputTimeNS; 
 
 				// force output flush
 				Stats->IsFlush = true;
