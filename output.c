@@ -946,19 +946,34 @@ cleanup:
 
 void Output_Close(Output_t* Out)
 {
-	fprintf(stderr, "Output close\n");
-
 	// override imnimum output size to flush buffers on exit 
 	s_Output_MergeMin = 1;
 
 	// wait for workers to output 
+	fprintf(stderr, "Output Close Put:%x Get:%x Fin:%x\n", Out->BufferPut, Out->BufferGet, Out->BufferFin);
+	u32 Timeout = 0;
 	while (Out->BufferGet != Out->BufferPut)
 	{
 		usleep(0);
+		assert(Timeout++ < 1e6);
 	}
-	s_Exit = true;
+
+	// wait for final send to complete.
+	// Get only means a worker pulled it off the queue
+	// does not mean it finished to completion. if s_Exit is set here
+	// then SendBuffer() will early exit out and not fully send
+	// the entries to ES
+	fprintf(stderr, "Output Fin wait Put:%x Get:%x Fin:%x\n", Out->BufferPut, Out->BufferGet, Out->BufferFin);
+	Timeout = 0;
+	while (Out->BufferPut != Out->BufferFin)
+	{
+		usleep(1);
+		assert(Timeout++ < 1e6);
+	}
+
 
 	fprintf(stderr, "Output Join\n");
+	s_Exit = true;
 	for (int i=0; i < Out->CPUActiveCnt; i++)
 	{
 		fprintf(stderr, "  Output Worker  Join %i\n", i);
