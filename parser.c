@@ -166,7 +166,7 @@ static volatile u32		s_PacketBlockMsk	= 0x7f;		//
 static PacketBlock_t*	s_PacketBlockRing[128];			// packet block queue
 
 static PipelineStats_t*	s_PipeStatsFree		= NULL;		// free stats list
-static u32				s_PipeStatsListMax	= 2048;		// number of stats entries to allocate 
+static u32				s_PipeStatsListMax	= 16*1024;	// number of stats entries to allocate 
 static u32				s_PipeStatsLock		= 0;		// mutual exclusion for alloc/free
 
 u64						g_TotalMemory		= 0;		// total memory allocated
@@ -957,7 +957,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 		LastTS 		= Pkt->TS;
 
 		// write the per filter log files
-		if (PktBlock->IsOutput && (LastTS >= PktBlock->OutputTS))
+		if (PktBlock->IsOutput && (LastTS > PktBlock->OutputTS))
 		{
 			// kick once 
 			PktBlock->IsOutput = false; 
@@ -976,6 +976,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			}
 		}
 	}
+
 
 	// queue 
 	for (int p=0; p < s_PipelinePos; p++)
@@ -1386,10 +1387,11 @@ int Parse_Start(void)
 
 	// inert an EOS block 
 	u32 SeqNoFinal = SeqNo;
-	fprintf(stderr, "Final Seqno:%i : %p\n", SeqNoFinal, s_PipeStatsFree);
+	fprintf(stderr, "Final Seqno:%i : StatsFree:%p NextOutputTS:%lli\n", SeqNoFinal, s_PipeStatsFree, NextOutputTS);
 	{
 
 		PacketBlock_t* PktBlock = PktBlock_Allocate();
+		assert(PktBlock != NULL);
 
 		PktBlock->SeqNo			= SeqNo++;
 		PktBlock->PktCnt		= 0;
@@ -1406,16 +1408,24 @@ int Parse_Start(void)
 		s_PacketBlockRing[ s_PacketBlockPut & s_PacketBlockMsk ] = PktBlock;
 		s_PacketBlockPut++;
 	}
+	fprintf(stderr, "LastTS: %s %lli\n", FormatTS(LastTS), LastTS );
 
 	// wait for all blocks have completed
-	fprintf(stderr, "Wait for Blocks to finish\n");
+	fprintf(stderr, "Wait for Blocks to finish Get:%08x Put:%08x\n", s_PacketBlockGet, s_PacketBlockPut);
 	while (s_PacketBlockGet != s_PacketBlockPut)
 	{
-		// keep aggregating to gree up stats blocks
+		/*
+		// keep aggregating to free up stats blocks
+		//
+		// 2019/12/10 can not do this as it may process
+		//            final chunks without flushing to JSON
+		//            have increased the total allocated stats
+		//            wich should resolve the previous out of stats problem
 		for (int i=0; i < s_PipelinePos; i++)
 		{
 			Pipeline_StatsAggregate(s_PipelineList[i]);
 		}
+		*/
 		usleep(10e3);
 	}
 
@@ -1428,6 +1438,9 @@ int Parse_Start(void)
 		fprintf(stderr, "  BPF Worker thread join %i\n", i); 
 	}
 
+	// reset the JSON Output block 
+	s_JSONLine = s_JSONBuffer;
+
 	// aggreate after final processing 
 	fprintf(stderr, "Final Aggregation\n");
 	for (int i=0; i < s_PipelinePos; i++)
@@ -1436,8 +1449,14 @@ int Parse_Start(void)
 		Pipeline_t* P = s_PipelineList[i];
 		for (int cpu=0; cpu < g_CPUActive; cpu++)
 		{
-			PipelineStats_t* Stats = P->QueueHead[cpu];
-			if (!Stats) continue;
+			PipelineStats_t* Stats = P->QueueTail[cpu];
+			if (!Stats)
+			{
+				fprintf(stderr, "pipe:%4i cpu:%i null %p %p\n", i, cpu, P->QueueHead[cpu], P->QueueTail[cpu]);
+				continue;
+			}
+
+			fprintf(stderr, "pipe:%4i cpu:%i Found Final SeqNo:%i IsFlush:%i Final:%i LastTS:%lli\n", i, cpu, Stats->SeqNo, Stats->IsFlush, Stats->SeqNo == SeqNoFinal, Stats->LastTS);
 
 			// if it the final seq number?
 			if (Stats->SeqNo == SeqNoFinal)
@@ -1473,6 +1492,7 @@ int Parse_Start(void)
 	fprintf(stderr, "Output Close\n");
 	Output_Close(s_Output);
 
+	//printf("Final JSON %i\n%s\n", Length, s_JSONBuffer);
 
 	printf("TotalPktUnique : %10lli\n", TotalPktUnique);
 	printf("TotalPkt       : %10lli\n", TotalPkt);
