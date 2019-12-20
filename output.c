@@ -1203,6 +1203,9 @@ void Output_Stats(	Output_t* Out,
 					u64*   pPushSizeB,
 					u64*   pPushBps
 ){
+
+	if (!Out) return;
+
 	u64 Total 	= 0;
 	u64 Top 	= 0;
 	u64 Comp 	= 0;
@@ -1247,7 +1250,7 @@ void Output_Stats(	Output_t* Out,
 	float AvgUpload = Out->ESPushByte * inverse(Out->ESPushCnt);
 
 	// average upload bits / sec 
-	float Bps = (Out->ESPushByte * 8.0) / dT;
+	float Bps = (Out->ESPushByte * 8.0) * inverse(dT);
 
 	if (pPushSizeB) pPushSizeB[0] = AvgUpload;
 	if (pPushBps) pPushBps[0] = Bps;

@@ -1349,6 +1349,14 @@ int Parse_Start(void)
 
 			u32 QueueDepth = s_PipelineList[0]->QueueDepth;
 
+			// ES push stats
+			float OutputWorkerCPU 		= 0;
+			float OutputWorkerCPURecv 	= 0;
+			u64 OutputPendingB 			= 0;
+			u64 OutputPushSizeB 		= 0;
+			u64 OutputPushBps 			= 0;
+			Output_Stats(s_Output, true,  &OutputWorkerCPU, NULL, NULL, &OutputWorkerCPURecv, NULL, &OutputPendingB, &OutputPushSizeB, &OutputPushBps);
+
 			// aggregat stats
 			u64 WorkerTotal = 0;
 			u64 WorkerUsed 	= 0;
@@ -1360,7 +1368,7 @@ int Parse_Start(void)
 				s_PipeWorkerCPUReset[i]	= true;
 			}
 			float WorkerCPU = WorkerUsed * inverse(WorkerTotal);
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f\n", 
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f | ESPush:%6lli ESErr %4lli | OutCPU:%.2f OutPush: %.2f MB OutQueue:%6.1fMB %.3f Gbps\n", 
 						dT / (60*60), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
@@ -1371,7 +1379,14 @@ int Parse_Start(void)
 						StreamCAT_CPUSend,
 						
 						QueueDepth,
-						WorkerCPU);
+						WorkerCPU,
+						Output_ESPushCnt(s_Output),
+						Output_ESErrorCnt(s_Output),
+						OutputWorkerCPU,
+						OutputPushSizeB / (float)kMB(1),
+						OutputPendingB / (float)kMB(1) ,
+						(float)(OutputPushBps / 1e9)
+			);
 			fflush(stderr);
 			fflush(stdout);
 
