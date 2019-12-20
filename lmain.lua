@@ -172,6 +172,11 @@ Global_CaptureName = function(Name)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
+-- dummy handler for stream_cat, defined here only so theres no undef func call 
+Global_FollowNow = function(Name)
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
 -- sets the output thread cpu mapping
 Pipe_CPUMap = function(CPUMap)
 
