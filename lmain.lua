@@ -47,7 +47,7 @@ local Output_IsCompress 		= false;
 local Output_IsESNULL 			= false;
 
 local Output_ESHostList 		= {};
-local Output_ThreadCnt			= 32 
+local Output_ThreadCount		= 32 
 local Output_CPUMapList 		= {0, 1, 2, 3};
 
 local Output_KeepAlive			= true;
@@ -130,6 +130,12 @@ Output_ESKeepAlive = function(Enable, Timeout)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
+-- set the total number of output threads
+Output_ThreadCnt = function(Cnt)
+	Output_ThreadCount = Cnt
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
 -- creates the output backend
 Output_Create = function(Mode)
 
@@ -145,7 +151,7 @@ Output_Create = function(Mode)
 											Output_KeepAliveTimeout,
 											Output_FilterPath,
 											nil,
-											Output_ThreadCnt,
+											Output_ThreadCount,
 											#Output_CPUMapList,
 											_CPUMap);
 
@@ -174,7 +180,6 @@ end
 -----------------------------------------------------------------------------------------------------------------------------------
 -- dummy handlers for analytics configuration settings
 Global_FollowNow 	= function(Name) end
-Output_ThreadCnt 	= function(Name) end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- sets the output thread cpu mapping
