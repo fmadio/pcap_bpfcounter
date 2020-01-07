@@ -172,9 +172,9 @@ Global_CaptureName = function(Name)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
--- dummy handler for stream_cat, defined here only so theres no undef func call 
-Global_FollowNow = function(Name)
-end
+-- dummy handlers for analytics configuration settings
+Global_FollowNow 	= function(Name) end
+Global_FollowStart 	= function(Name) end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- sets the output thread cpu mapping
