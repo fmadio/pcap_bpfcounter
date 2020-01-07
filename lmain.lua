@@ -174,7 +174,7 @@ end
 -----------------------------------------------------------------------------------------------------------------------------------
 -- dummy handlers for analytics configuration settings
 Global_FollowNow 	= function(Name) end
-Global_FollowStart 	= function(Name) end
+Output_ThreadCnt 	= function(Name) end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- sets the output thread cpu mapping
