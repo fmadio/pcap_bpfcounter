@@ -9,7 +9,15 @@
 // sudo /opt/fmadio/bin/stream_cat --uid bpfcounter_1583488028395397888  --cpu 9  --chunked --pktslice 96 --ignore_fcs interop17_20200301_1838 |  ./pcap_bpfcounter  --cpu-core 10 --cpu-output 1 11 --cpu-pipe 12 12 13 14 15 16 17 18 19 20 21 22 23 --config /opt/fmadio/etc/bpfcounter.lua
 //
 // 2020/03/06 : baseline performance stats. linux pipe mode 
-//				20200306_19-28-11 Performance : 0 sec  9.49 GB 1.600 Gbps 1.829Mpps
+//			 		
+
+// 2020/03/06 : baseline performance stats. linux pipe mode chunked 
+//
+//				20200306_19-44-01 Performance : 45.216 sec  9.49 GB 1.679 Gbps 1.919Mpps 	
+//
+// 				baseline performance stats. linux pipe mode 
+//
+// 				20200306_19-40-34 Performance : 52.930 sec  9.49 GB 1.434 Gbps 1.640Mpps
 //
 //---------------------------------------------------------------------------------------------
 
@@ -1518,15 +1526,15 @@ int Parse_Start(void)
 	printf("TotalPkt       : %10lli\n", TotalPkt);
 	printf("TotalPktHit    : %10lli\n", TotalPktHit);
 
-	float dT = (clock_ns() - StartTS) / 1e9;
-	printf("Total Time     : %.f Sec\n", dT);
+	float dT = (clock_ns() - StartTS);
+	printf("Total Time     : %.f Sec\n", dT/1e9);
 
-	float bps = (PCAPOffset * 8.0) / dT;
-	float pps = TotalPktUnique / dT;
+	float bps = (PCAPOffset * 8.0) / (dT / 1e9);
+	float pps = TotalPktUnique / (dT / 1e9);
 
 	u8 TimeStr[128];
 	clock_str(TimeStr, clock_date() );
-	printf("%s Performance : %.f sec  %.2f GB %.3f Gbps %.3fMpps\n", TimeStr, dT/1e9, PCAPOffset / 1e9, bps / 1e9, pps/1e6);
+	printf("%s Performance : %.3f sec  %.2f GB %.3f Gbps %.3fMpps\n", TimeStr, dT/1e9, PCAPOffset / 1e9, bps / 1e9, pps/1e6);
 
 	return 0;
 }
