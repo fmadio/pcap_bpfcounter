@@ -8,7 +8,7 @@ LOBJS += lmain.o
 
 DEF = 
 DEF += -g
-DEF += -O1
+DEF += -O3
 DEF += --std=c99 
 DEF += -I../
 DEF += -I./luajit/src

@@ -141,6 +141,13 @@ typedef struct Pipeline_t
 	u8						BPF[1024];
 	u8						BPFCode[16*1024];
 
+	// fast path mac src filter 
+	bool					FilterMACSrcEnb;			// src mac filter enabled	
+	u8						FilterMACSrc[6];			// src mac address to filter on
+
+	bool					FilterMACDstEnb;			// dst mac filter enabled	
+	u8						FilterMACDst[6];			// dst mac address to filter on
+
 	u32						TimeBinMax;					// max bins
 	u64						TimeBinNS;					// time bin in nanos	
 
@@ -188,12 +195,12 @@ static Pipeline_t* 		s_PipelineList[16*1024];
 
 static PacketBlock_t*	s_PacketBlockFree 	= NULL;		// free packet buffer list
 
-static u32				s_PacketBlockMax	= 64;		// number of blocks to allocate
+static u32				s_PacketBlockMax	= 256;		// number of blocks to allocate
 
 static volatile u32		s_PacketBlockPut	= 0;		// packet blocks ready for processing	
 static volatile u32		s_PacketBlockGet	= 0;		// packet blocks completed processing
 static volatile u32		s_PacketBlockMsk	= 0x7f;		// 
-static PacketBlock_t*	s_PacketBlockRing[128];			// packet block queue
+static PacketBlock_t*	s_PacketBlockRing[1024];			// packet block queue
 
 static PipelineStats_t*	s_PipeStatsFree		= NULL;		// free stats list
 static u32				s_PipeStatsListMax	= 16*1024;	// number of stats entries to allocate 
@@ -221,6 +228,8 @@ bool 					g_Verbose			= false;
 
 static u64				s_PipeWorkerCPUTotal[128];		// total cpu cycles for the worker
 static u64				s_PipeWorkerCPU[128];			// cpu cycles spent operating on data 
+static u64				s_PipeWorkerCPUAlloc[128];		// cpu cycles spent allocating buffers 
+
 static volatile bool	s_PipeWorkerCPUReset[128];		// request to reset the stats 
 
 
@@ -307,6 +316,42 @@ int Pipe_SetBPF(struct Pipeline_t* Pipe, u8* BPFString)
 
 	// BPF code compiled 
 	fprintf(stderr, "[%-40s] set BPF \"%s\"\n", Pipe->Name, Pipe->BPF);
+
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// set fast path MAC Src filter
+int Pipe_SetFastFilterMACSrc(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2, u8 MAC3, u8 MAC4, u8 MAC5)
+{
+
+	Pipe->FilterMACSrcEnb = true;
+	Pipe->FilterMACSrc[0] = MAC0;
+	Pipe->FilterMACSrc[1] = MAC1;
+	Pipe->FilterMACSrc[2] = MAC2;
+	Pipe->FilterMACSrc[3] = MAC3;
+	Pipe->FilterMACSrc[4] = MAC4;
+	Pipe->FilterMACSrc[5] = MAC0;
+
+	fprintf(stderr, "[%-40s] MACSrcFilter %02x:%02x:%02x:%02x:%02x:%02x\n", Pipe->Name, MAC0, MAC1, MAC2, MAC3, MAC4, MAC5);
+
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
+// set fast path MAC Dst filter
+int Pipe_SetFastFilterMACDst(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2, u8 MAC3, u8 MAC4, u8 MAC5)
+{
+
+	Pipe->FilterMACDstEnb = true;
+	Pipe->FilterMACDst[0] = MAC0;
+	Pipe->FilterMACDst[1] = MAC1;
+	Pipe->FilterMACDst[2] = MAC2;
+	Pipe->FilterMACDst[3] = MAC3;
+	Pipe->FilterMACDst[4] = MAC4;
+	Pipe->FilterMACDst[5] = MAC0;
+
+	fprintf(stderr, "[%-40s] MACDstFilter %02x:%02x:%02x:%02x:%02x:%02x\n", Pipe->Name, MAC0, MAC1, MAC2, MAC3, MAC4, MAC5);
 
 	return 0;
 }
@@ -632,6 +677,7 @@ static bool Pipeline_StatsAggregate(Pipeline_t* P)
 				continue;
 			}
 
+
 			// decrement ptr 
 			sync_lock(&P->QueueLock, 100);
 			{
@@ -697,6 +743,8 @@ static bool Pipeline_StatsAggregate(Pipeline_t* P)
 
 			// activity counter 
 			UpdateCnt++;	
+
+
 		}
 
 		// nothing more to update?
@@ -808,8 +856,8 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 
 	// create stats block
 
-	PipelineStats_t*	StatsList[128];
 
+	PipelineStats_t*	StatsList[128];
 	for (int p=0; p < s_PipelinePos; p++)
 	{
 		StatsList[p] = PipeStats_Alloc(PktBlock->SeqNo); 
@@ -834,6 +882,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 
 		u8* PacketPayload	= (u8*)(Pkt + 1);
 
+
 		// process all pipelines	
 		for (int p=0; p < s_PipelinePos; p++)
 		{
@@ -857,7 +906,44 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			PipeStats->LastTS = Pkt->TS;
 
 			// run BPF expression
-			int Result = pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
+			int Result = 0; 
+
+			if (Pipe->BPFValid)
+			{
+				Result =  pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
+			}
+
+			// hardcoded mac src filter
+			if (Pipe->FilterMACSrcEnb)
+			{
+				fEther_t* Ether = (fEther_t*)(Pkt + 1);
+				if ((Ether->Src[0] == Pipe->FilterMACSrc[0]) &&
+					(Ether->Src[1] == Pipe->FilterMACSrc[1]) &&
+					(Ether->Src[1] == Pipe->FilterMACSrc[2]) &&
+					(Ether->Src[1] == Pipe->FilterMACSrc[3]) &&
+					(Ether->Src[1] == Pipe->FilterMACSrc[4]) &&
+					(Ether->Src[1] == Pipe->FilterMACSrc[5]))
+				{
+					Result = 1;
+				}
+			}
+
+			// hardcoded mac dst filter
+			if (Pipe->FilterMACSrcEnb)
+			{
+				fEther_t* Ether = (fEther_t*)(Pkt + 1);
+				if ((Ether->Dst[0] == Pipe->FilterMACDst[0]) &&
+					(Ether->Dst[1] == Pipe->FilterMACDst[1]) &&
+					(Ether->Dst[1] == Pipe->FilterMACDst[2]) &&
+					(Ether->Dst[1] == Pipe->FilterMACDst[3]) &&
+					(Ether->Dst[1] == Pipe->FilterMACDst[4]) &&
+					(Ether->Dst[1] == Pipe->FilterMACDst[5]))
+				{
+					Result = 1;
+				}
+			}
+
+			//int Result = 0; 
 			if (Result != 0)
 			{
 				// BPF got a hit
@@ -865,7 +951,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				PipeStats->TotalByte	+= Pkt->LengthWire;
 
 				// update Bins
-				//PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
+				PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
 				PipeStats->Time.BinListWire  [PipeStats->Time.BinCnt] = Pkt->LengthWire;
 				PipeStats->Time.BinCnt++;
 
@@ -976,14 +1062,12 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				}
 				TotalPktHit++;
 			}
-
 			TotalPkt++;
 
 			// time bin in comparsion 
 			PipeStats->AllPkt 	+= 1;
 			PipeStats->AllByte	+= Pkt->LengthWire;
 		}
-
 
 		LastTS 		= Pkt->TS;
 
@@ -1007,7 +1091,6 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			}
 		}
 	}
-
 
 	// queue 
 	for (int p=0; p < s_PipelinePos; p++)
@@ -1061,7 +1144,8 @@ void* PktBlock_Worker(void* User)
 		if (s_PipeWorkerCPUReset[CPUID])
 		{
 			s_PipeWorkerCPUReset[CPUID] = false;
-			s_PipeWorkerCPU[CPUID] 		= 0;
+			s_PipeWorkerCPU		[CPUID] = 0;
+			s_PipeWorkerCPUAlloc[CPUID] = 0;
 			s_PipeWorkerCPUTotal[CPUID] = 0;
 		}
 	}
@@ -1071,7 +1155,6 @@ void* PktBlock_Worker(void* User)
 
 int Parse_Start(void)
 {
-	u64 StartTS					= clock_ns();
 	u64 PCAPOffset				= 0;
 
 	// get the hosts name
@@ -1271,6 +1354,8 @@ int Parse_Start(void)
 	u32 StatsIndex				= 0;		// current stats index
 	u64 SeqNo					= 0;		// pkt block sequence number. 
 
+	u64 StartTS					= clock_ns();
+
 	while (!feof(FIn))
 	{
 		fProfile_Start(0, "Core Top");
@@ -1434,8 +1519,9 @@ int Parse_Start(void)
 
 			// signal its been consued to stream_cat
 			SHMRingHeader->Get++;
-		}
 
+			fProfile_Stop(5);
+		}
 
 		// update stats
 		PCAPOffset 		+= PktBlock->BufferLength; 
@@ -1499,14 +1585,16 @@ int Parse_Start(void)
 		{
 			IsFlush |= Pipeline_StatsAggregate(s_PipelineList[i]);
 		}
+		fProfile_Stop(1);
 
 		// if JSON buffer was written to then kick it
+		fProfile_Start(6, "OutputJSON");
 		if (IsFlush)
 		{
 			u32 Length = s_JSONLine - s_JSONBuffer;
 			Output_BufferAdd(s_Output, s_JSONBuffer, Length, 1);
 		}
-		fProfile_Stop(1);
+		fProfile_Stop(6);
 
 		// write processing status 
 		u64 TSC = rdtsc();
@@ -1518,9 +1606,20 @@ int Parse_Start(void)
 			clock_date_t c	= ns2clock(LastTS);
 			sprintf(TimeStr, "%04i-%02i-%02i %02i:%02i:%02i", c.year, c.month, c.day, c.hour, c.min, c.sec);
 
-			double dT = (clock_ns() - StartTS) / 1e9;
-			double Bps = (PCAPOffset * 8.0) / dT; 
-			double Pps = (TotalPktUnique) / dT; 
+
+			static u64 LastTS 			= 0;
+			static u64 LastPCAPOffset 	= 0;
+			static u64 LastPktUnique 	= 0;
+
+			u64 TS 				= clock_ns();
+			double dT			= (TS - LastTS)/1e9;
+
+			double Bps 		= ((PCAPOffset - LastPCAPOffset)* 8.0) / dT; 
+			double Pps 		= (TotalPktUnique - LastPktUnique) / dT; 
+
+			LastTS 			= TS;
+			LastPCAPOffset 	= PCAPOffset;
+			LastPktUnique	= TotalPktUnique;
 
 			u32 QueueDepth = s_PipelineList[0]->QueueDepth;
 
@@ -1533,18 +1632,21 @@ int Parse_Start(void)
 			Output_Stats(s_Output, true,  &OutputWorkerCPU, NULL, NULL, &OutputWorkerCPURecv, NULL, &OutputPendingB, &OutputPushSizeB, &OutputPushBps);
 
 			// aggregat stats
-			u64 WorkerTotal = 0;
-			u64 WorkerUsed 	= 0;
+			u64 WorkerTotal	 	= 0;
+			u64 WorkerUsed 		= 0;
+			u64 WorkerAlloc 	= 0;
 			for (int i=0; i < g_CPUWorkerCnt; i++)
 			{
-				WorkerTotal += s_PipeWorkerCPUTotal[i]; 
-				WorkerUsed 	+= s_PipeWorkerCPU[i]; 
+				WorkerTotal	 	+= s_PipeWorkerCPUTotal[i]; 
+				WorkerUsed 		+= s_PipeWorkerCPU[i]; 
+				WorkerAlloc 	+= s_PipeWorkerCPUAlloc[i]; 
 
 				s_PipeWorkerCPUReset[i]	= true;
 			}
+
 			float WorkerCPU = WorkerUsed * inverse(WorkerTotal);
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Pipelines %4i Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f | ESPush:%6lli ESErr %4lli | OutCPU:%.2f OutPush: %.2f MB OutQueue:%6.1fMB %.3f Gbps\n", 
-						dT / (60*60), 
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Pipelines %4i Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f %.3f | ESPush:%6lli ESErr %4lli | OutCPU:%.2f OutPush: %.2f MB OutQueue:%6.1fMB %.3f Gbps\n", 
+						(TS - StartTS) / (60*60*1e9), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
 						s_PipelinePos,
@@ -1556,9 +1658,13 @@ int Parse_Start(void)
 						
 						QueueDepth,
 						WorkerCPU,
+						(float)WorkerAlloc / (float)WorkerTotal,
+
 						Output_ESPushCnt(s_Output),
 						Output_ESErrorCnt(s_Output),
 						OutputWorkerCPU,
+
+						
 						OutputPushSizeB / (float)kMB(1),
 						OutputPendingB / (float)kMB(1) ,
 						(float)(OutputPushBps / 1e9)
@@ -1569,6 +1675,8 @@ int Parse_Start(void)
 			static int cnt = 0;
 			if (cnt++ > 10)
 			{
+				fProfile_Stop(0);
+
 				cnt = 0;
 				fProfile_Dump(0);
 			}

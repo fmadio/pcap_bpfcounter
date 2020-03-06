@@ -22,18 +22,51 @@ ffi.cdef[[
 
 	// pipeline status
 	struct Pipeline_t;
-	struct Pipeline_t* 		Pipe_Create			(u8* Name);
-	int 					Pipe_SetBPF			(struct Pipeline_t* Pipe, u8* BPFString);
-	int 					Pipe_SetBurstTime	(struct Pipeline_t* Pipe, double TimeBucketNS);
-	int 					Pipe_SetUpdateRate	(double OutputNS);
-	void					Pipe_SetOutput		(struct Output_t* Output);
-	void 					Pipe_SetCaptureName	(u8* CaptureName);
-	void 					Pipe_SetCPUCore		(int CPU); 
-	void 					Pipe_SetCPUWorker	(int CPUCnt, u32* CPUMap);
-	void 					Pipe_SetUserJSON	(struct Pipeline_t* Pipe, u8* UserJSON);
+	struct Pipeline_t* 		Pipe_Create					(u8* Name);
+	int 					Pipe_SetBPF					(struct Pipeline_t* Pipe, u8* BPFString);
+	int 					Pipe_SetFastFilterMACSrc	(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2, u8 MAC3, u8 MAC4, u8 MAC5); 
+	int 					Pipe_SetFastFilterMACDst	(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2, u8 MAC3, u8 MAC4, u8 MAC5); 
+
+	int 					Pipe_SetBurstTime			(struct Pipeline_t* Pipe, double TimeBucketNS);
+	int 					Pipe_SetUpdateRate			(double OutputNS);
+	void					Pipe_SetOutput				(struct Output_t* Output);
+	void 					Pipe_SetCaptureName			(u8* CaptureName);
+	void 					Pipe_SetCPUCore				(int CPU); 
+	void 					Pipe_SetCPUWorker			(int CPUCnt, u32* CPUMap);
+	void 					Pipe_SetUserJSON			(struct Pipeline_t* Pipe, u8* UserJSON);
 
 
 ]]
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- builtins 
+function string:split( inSplitPattern, outResults )
+
+	if not outResults then
+		outResults = { }
+	end
+	local theStart = 1
+	local theSplitStart, theSplitEnd = string.find( self, inSplitPattern, theStart )
+	while theSplitStart do
+		table.insert( outResults, string.sub( self, theStart, theSplitStart-1 ) )
+		theStart = theSplitEnd + 1
+		theSplitStart, theSplitEnd = string.find( self, inSplitPattern, theStart )
+	end
+
+	table.insert( outResults, string.sub( self, theStart ) )
+	return outResults
+end
+
+function string:strip()
+	return self:gsub("^%s*(.-)%s*$", "%1")
+end
+
+function trace(Message, ...)
+	io.stderr:write( string.format(Message, unpack({...})))
+end
+
+
+
 
 -----------------------------------------------------------------------------------------------------------------------------------
 
@@ -55,6 +88,7 @@ local Output_KeepAliveTimeout	= 10e9;
 local Output_FilterPath			= true;
 
 local Pipe_CPUMapList 			= {}
+local Pipe_IsDisableFastFilter 	= false;				-- optional disable fast filters	
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- setup default cpu maps based on command line args 
@@ -182,11 +216,65 @@ end
 Global_FollowNow 	= function(Name) end
 
 -----------------------------------------------------------------------------------------------------------------------------------
+-- disable fast path 
+Pipe_DisableFastFilter 	= function() 
+	trace("Disable Fast Filter\n");
+	Pipe_IsDisableFastFilter = true;	
+end
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
 -- sets the output thread cpu mapping
 Pipe_CPUMap = function(CPUMap)
 
 	local _CPUMap = ffi.new("int[128]", CPUMap)
 	ffi.C.Pipe_SetCPUWorker( #CPUMap, _CPUMap);
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------
+local Pipe_FastBPF = function(Pipe, Name, BPF)
+
+	if (Pipe_IsDisableFastFilter) then return nil end
+
+	local s = BPF:split("%s+")
+	--for a,b in ipairs(s) do  print(a, "["..b.."]") end
+
+	-- check simple ether src 
+	if (#s == 3) and (s[1] == "ether") and (s[2] == "src") then
+
+		local MAC = s[3]:split(":")
+
+		MAC[1] = tonumber("0x"..MAC[1])
+		MAC[2] = tonumber("0x"..MAC[2])
+		MAC[3] = tonumber("0x"..MAC[3])
+		MAC[4] = tonumber("0x"..MAC[4])
+		MAC[5] = tonumber("0x"..MAC[5])
+		MAC[6] = tonumber("0x"..MAC[6])
+
+		ffi.C.Pipe_SetFastFilterMACSrc(Pipe, MAC[1], MAC[2], MAC[3], MAC[4], MAC[5], MAC[6]);
+		--trace("[%-40s] MACSrcFilter: ether src filter %02x:%02x:%02x:%02x:%02x:%02x [%s]\n", Name, MAC[1], MAC[2], MAC[3], MAC[4], MAC[5], MAC[6], BPF);
+
+		return true
+	end
+
+	-- check simple ether dst 
+	if (#s == 3) and (s[1] == "ether") and (s[2] == "dst") then
+
+		local MAC = s[3]:split(":")
+
+		MAC[1] = tonumber("0x"..MAC[1])
+		MAC[2] = tonumber("0x"..MAC[2])
+		MAC[3] = tonumber("0x"..MAC[3])
+		MAC[4] = tonumber("0x"..MAC[4])
+		MAC[5] = tonumber("0x"..MAC[5])
+		MAC[6] = tonumber("0x"..MAC[6])
+
+		ffi.C.Pipe_SetFastFilterMACDst(Pipe, MAC[1], MAC[2], MAC[3], MAC[4], MAC[5], MAC[6]);
+		--trace("[%-40s] MACSrcFilter: ether src filter %02x:%02x:%02x:%02x:%02x:%02x [%s]\n", Name, MAC[1], MAC[2], MAC[3], MAC[4], MAC[5], MAC[6], BPF);
+
+		return true
+	end
+
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
@@ -204,9 +292,14 @@ Pipe_Create = function(Info)
 	-- create the pipeline
 	local Pipe = ffi.C.Pipe_Create( ffi.cast("u8*", Info.Name))
 
-	-- set the BPF expression
-	if (ffi.C.Pipe_SetBPF(Pipe, ffi.cast("u8*", Info.BPF)) < 0 ) then
-		return
+
+	-- check for fast path optimizations
+	if (Pipe_FastBPF(Pipe, Info.Name, Info.BPF) == nil) then	
+
+		-- fallback to regular BPF 
+		if (ffi.C.Pipe_SetBPF(Pipe, ffi.cast("u8*", Info.BPF)) < 0 ) then
+			return
+		end
 	end
 
 	-- set burst rate (if passed) 
