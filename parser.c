@@ -8,9 +8,22 @@
 //
 // sudo /opt/fmadio/bin/stream_cat --uid bpfcounter_1583488028395397888  --cpu 9  --chunked --pktslice 96 --ignore_fcs interop17_20200301_1838 |  ./pcap_bpfcounter  --cpu-core 10 --cpu-output 1 11 --cpu-pipe 12 12 13 14 15 16 17 18 19 20 21 22 23 --config /opt/fmadio/etc/bpfcounter.lua
 //
-// 2020/03/06 : baseline performance stats. linux pipe mode 
-//			 		
-
+// rule set is 100 MAC address bpf filters 			 		
+//
+// ----------------------------------------------------------------------------
+// for i=0,100 do
+// 	-- create pipelines
+// 	Pipe_Create(
+// 	{
+// 		["Name"] 			= "full"..i,
+// 		["BPF"]  			= "",
+// 		["RE"]   			= "",
+// 		["JSON"] 			= '"EtherSrc":"00:00:00:00:00:00","EtherDst":"11:11:11:11:11:11"',
+// 	})
+// end
+//
+// Output mode is NULL
+//
 // 2020/03/06 : baseline performance stats. linux pipe mode chunked 
 //
 //				20200306_19-44-01 Performance : 45.216 sec  9.49 GB 1.679 Gbps 1.919Mpps 	
@@ -18,6 +31,10 @@
 // 				baseline performance stats. linux pipe mode 
 //
 // 				20200306_19-40-34 Performance : 52.930 sec  9.49 GB 1.434 Gbps 1.640Mpps
+//
+// 2020/03/06 : moved to SHMRing bufer. some performance increase ~ 30% but not that good.. 
+//
+//              20200306_20-16-16 Performance : 35.586 sec  9.49 GB 2.134 Gbps 2.439Mpps
 //
 //---------------------------------------------------------------------------------------------
 
@@ -847,9 +864,8 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				PipeStats->TotalPkt		+= 1;
 				PipeStats->TotalByte	+= Pkt->LengthWire;
 
-
 				// update Bins
-				PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
+				//PipeStats->Time.BinListIndex [PipeStats->Time.BinCnt] = TimeIndex;
 				PipeStats->Time.BinListWire  [PipeStats->Time.BinCnt] = Pkt->LengthWire;
 				PipeStats->Time.BinCnt++;
 
@@ -960,12 +976,14 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				}
 				TotalPktHit++;
 			}
+
 			TotalPkt++;
 
 			// time bin in comparsion 
 			PipeStats->AllPkt 	+= 1;
 			PipeStats->AllByte	+= Pkt->LengthWire;
 		}
+
 
 		LastTS 		= Pkt->TS;
 
@@ -1082,15 +1100,91 @@ int Parse_Start(void)
 	}
 	PCAPOffset		= sizeof(PCAPHeader_t);
 
-	bool IsPCAP = false;
-	bool IsFMAD = false;
+	bool IsPCAP 	= false;
+	bool IsFMAD 	= false;
+	bool IsFMADRING = false;
 	u64 TScale = 0;
+
 	switch (HeaderMaster.Magic)
 	{
-	case PCAPHEADER_MAGIC_NANO: fprintf(stderr, "PCAP Nano\n"); 	TScale = 1;     IsPCAP = true; break;
-	case PCAPHEADER_MAGIC_USEC: fprintf(stderr, "PCAP Micro\n"); 	TScale = 1000; 	IsPCAP = true; break;
-	case PCAPHEADER_MAGIC_FMAD: fprintf(stderr, "FMAD Chunked\n"); 	TScale = 1; 	IsFMAD = true; break;
+	case PCAPHEADER_MAGIC_NANO: 
+		fprintf(stderr, "PCAP Nano\n"); 
+		TScale = 1;    
+		IsPCAP = true;
+		break;
+	case PCAPHEADER_MAGIC_USEC: 
+		fprintf(stderr, "PCAP Micro\n");
+		TScale = 1000; 
+		IsPCAP = true;
+		break;
+
+	case PCAPHEADER_MAGIC_FMAD: 
+		fprintf(stderr, "FMAD Format Chunked\n");
+		TScale = 1; 
+		IsFMAD = true;
+		break;
+
+	case PCAPHEADER_MAGIC_FMADRING: 
+		fprintf(stderr, "FMAD Ringbuffer Chunked\n");
+		TScale = 1; 
+		IsFMADRING = true;
+		break;
+
+
+	default:
+		fprintf(stderr, "invaliid PCAP format %08x\n", HeaderMaster.Magic);
+		return -1;
 	}
+	// SHM ring format
+	FMADSHMRingHeader_t* SHMRingHeader	= NULL; 
+	u8* SHMRingData						= NULL; 
+	if (IsFMADRING)
+	{
+		// stream cat sends the size of the shm file
+		u64 SHMRingSize = 0;
+		fread(&SHMRingSize, 1, sizeof(SHMRingSize), FIn);
+
+		u8 SHMRingName0[128];			// stream_cat sends ring names in 128B
+		u8 SHMRingName1[128];			// stream_cat sends ring names in 128B
+		u8 SHMRingName2[128];			// stream_cat sends ring names in 128B
+		u8 SHMRingName3[128];			// stream_cat sends ring names in 128B
+
+		fread(SHMRingName0, 1, 128, FIn);
+		fread(SHMRingName1, 1, 128, FIn);
+		fread(SHMRingName2, 1, 128, FIn);
+		fread(SHMRingName3, 1, 128, FIn);
+
+		fprintf(stderr, "SHMRingName [%s] %lli\n", SHMRingName0, SHMRingSize);
+
+		// open the shm ring
+		int fd = shm_open(SHMRingName0, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+		if (fd < 0)
+		{
+			fprintf(stderr, "failed to create SHM ring buffer\n");
+			return 0;
+		}
+
+		// map
+		void* SHMMap = mmap(NULL, SHMRingSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (SHMMap == MAP_FAILED)
+		{
+			fprintf(stderr, "failed to mmap shm ring buffer\n");
+			return 0;
+		}
+
+		SHMRingHeader	= (FMADSHMRingHeader_t*)SHMMap;
+		fprintf(stderr, "SHMRing Version :%08x ChunkSize:%i\n", SHMRingHeader->Version, SHMRingHeader->ChunkSize);
+		assert(SHMRingHeader->Version == OUTPUT_VERSION_1_00);
+
+		// reset get heade
+		assert(sizeof(FMADSHMRingHeader_t) == 8*16*2);
+		SHMRingData	= (u8*)(SHMRingHeader + 1);
+
+		fprintf(stderr, "SHM Initial State Put:%08x Get:%08x\n", SHMRingHeader->Get, SHMRingHeader->Put);
+	}
+
+
+
 
 	u64 LastTS					= 0;
 	u64 LastTSC					= 0;
@@ -1275,6 +1369,74 @@ int Parse_Start(void)
 			StreamCAT_CPUSend     = Header.CPUSend / (float)0x10000;
 		}
 
+		if (IsFMADRING)
+		{
+			fProfile_Start(5, "PacketFetch_Ring");
+
+			// wait foe new data
+			bool IsExit = false;
+			do
+			{
+				// update consumer HB
+				SHMRingHeader->HBGetTSC = rdtsc();
+
+				// check producer is alive still & producer did not
+				// exit due to end of stream
+				s64 dTSC = rdtsc() - SHMRingHeader->HBPutTSC;
+				if ((dTSC > 60e9) && (SHMRingHeader->End == -1))
+				{
+					fprintf(stderr, "producer timeout: %lli\n", dTSC);
+					IsExit = true;
+					break;
+				}
+
+				// there is data
+				if (SHMRingHeader->Get != SHMRingHeader->Put) break;
+
+				// check for end of stream
+				if (SHMRingHeader->End == SHMRingHeader->Get)
+				{
+					fprintf(stderr, "end of capture End:%08x Put:%08x Get:%08x\n", SHMRingHeader->End, SHMRingHeader->Put, SHMRingHeader->Get);
+					IsExit = true;
+					break;
+				}
+
+				// wait a bit for a block to become ready
+				//usleep(0);
+				ndelay(250);
+
+			} while (SHMRingHeader->Get == SHMRingHeader->Put);
+
+			fProfile_Stop(5);
+
+			if (IsExit) break;
+
+			// get the chunk header info
+			u32 Index 	= SHMRingHeader->Get & SHMRingHeader->Mask;	
+			FMADHeader_t* Header = (FMADHeader_t*)(SHMRingData + Index * SHMRingHeader->ChunkSize);
+
+			PktBlock->PktCnt		= Header->PktCnt; 
+			PktBlock->ByteWire		= Header->BytesWire;
+			PktBlock->ByteCapture	= Header->BytesCapture;
+			PktBlock->TSFirst		= Header->TSStart;
+			PktBlock->TSLast		= Header->TSEnd;
+			PktBlock->BufferLength	= Header->Length;
+
+			// copy to local buffer
+			assert(Header->Length < PktBlock->BufferMax);
+			memcpy(PktBlock->Buffer, Header + 1, Header->Length);
+
+			// copy stream cat stats
+			StreamCAT_BytePending = Header->BytePending;
+			StreamCAT_CPUActive   = Header->CPUActive / (float)0x10000;
+			StreamCAT_CPUFetch    = Header->CPUFetch / (float)0x10000;
+			StreamCAT_CPUSend     = Header->CPUSend / (float)0x10000;
+
+			// signal its been consued to stream_cat
+			SHMRingHeader->Get++;
+		}
+
+
 		// update stats
 		PCAPOffset 		+= PktBlock->BufferLength; 
 		TotalPktUnique	+= PktBlock->PktCnt;
@@ -1381,10 +1543,11 @@ int Parse_Start(void)
 				s_PipeWorkerCPUReset[i]	= true;
 			}
 			float WorkerCPU = WorkerUsed * inverse(WorkerTotal);
-			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f | ESPush:%6lli ESErr %4lli | OutCPU:%.2f OutPush: %.2f MB OutQueue:%6.1fMB %.3f Gbps\n", 
+			fprintf(stderr, "[%.3f H][%s] : Total Bytes %.3f GB Pipelines %4i Speed: %.3fGbps %.3f Mpps StreamCat: %6.2f MB Fetch %.2f Send %.2f : P0 QueueDepth:%i PipeCPU:%.3f | ESPush:%6lli ESErr %4lli | OutCPU:%.2f OutPush: %.2f MB OutQueue:%6.1fMB %.3f Gbps\n", 
 						dT / (60*60), 
 						TimeStr, 
 						PCAPOffset / 1e9, 
+						s_PipelinePos,
 						Bps / 1e9, 
 						Pps / 1e6, 
 						StreamCAT_BytePending / (float)kMB(1), 
@@ -1484,7 +1647,7 @@ int Parse_Start(void)
 				continue;
 			}
 
-			fprintf(stderr, "pipe:%4i cpu:%i Found Final SeqNo:%i IsFlush:%i Final:%i LastTS:%lli\n", i, cpu, Stats->SeqNo, Stats->IsFlush, Stats->SeqNo == SeqNoFinal, Stats->LastTS);
+			//fprintf(stderr, "pipe:%4i cpu:%i Found Final SeqNo:%i IsFlush:%i Final:%i LastTS:%lli\n", i, cpu, Stats->SeqNo, Stats->IsFlush, Stats->SeqNo == SeqNoFinal, Stats->LastTS);
 
 			// if it the final seq number?
 			if (Stats->SeqNo == SeqNoFinal)

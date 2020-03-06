@@ -555,6 +555,7 @@ typedef struct
 #define PCAPHEADER_MAGIC_NANO		0xa1b23c4d
 #define PCAPHEADER_MAGIC_USEC		0xa1b2c3d4
 #define PCAPHEADER_MAGIC_FMAD		0x1337bab3
+#define PCAPHEADER_MAGIC_FMADRING	0x1337bab7
 #define PCAPHEADER_MAJOR			2
 #define PCAPHEADER_MINOR			4
 #define PCAPHEADER_LINK_ETHERNET	1
@@ -618,6 +619,30 @@ typedef struct FMADHeader_t
 	u16				pad1;			
 
 } __attribute__((packed)) FMADHeader_t;
+
+
+// SHM Ring Header
+#define OUTPUT_VERSION_1_00		0x100		// initial version
+typedef struct FMADSHMRingHeader_t
+{
+	u64				Version;				// version of output ring 	
+	u64				ChunkSize;				// size in bytes of each chunk
+	u64				pad0[16 - 2];			// header pad
+
+
+	volatile u64	Put;					// location of writer 
+	volatile u64	Get;					// location of reader 
+	u64				Mask;					// mask of buffer
+	u64				Max;					// mask of buffer
+
+	volatile u64	End;					// end of the capture stream
+
+	volatile u64	HBGetTSC;				// heart beat for consumer 
+	volatile u64	HBPutTSC;				// heart beat for producer 
+
+	u64				pad2[16 - 7];
+
+} FMADSHMRingHeader_t;
 
 //-------------------------------------------------------------------------------------------------
 

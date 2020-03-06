@@ -24,6 +24,7 @@ LDFLAG =
 LDFLAG += -lm
 LDFLAG += -lc
 LDFLAG += -lpthread
+LDFLAG += -lrt
 LDFLAG += -g
 
 %.o: %.c
