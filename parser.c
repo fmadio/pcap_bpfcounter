@@ -16,7 +16,7 @@
 // 	Pipe_Create(
 // 	{
 // 		["Name"] 			= "full"..i,
-// 		["BPF"]  			= "",
+// 		["BPF"]  			= "ether src 11:11:11:11:11:11",
 // 		["RE"]   			= "",
 // 		["JSON"] 			= '"EtherSrc":"00:00:00:00:00:00","EtherDst":"11:11:11:11:11:11"',
 // 	})
@@ -35,6 +35,14 @@
 // 2020/03/06 : moved to SHMRing bufer. some performance increase ~ 30% but not that good.. 
 //
 //              20200306_20-16-16 Performance : 35.586 sec  9.49 GB 2.134 Gbps 2.439Mpps
+//
+// 2020/03/06 : added fast path ether src/dst filters
+//
+//              (before without fast path) buffers bit bigger than previous test
+//              20200307_01-46-50 Performance : 28.307 sec  9.49 GB 2.682 Gbps 3.066Mpps
+//
+//              (with fast path)
+//              20200307_01-45-45 Performance : 20.207 sec  9.49 GB 3.757 Gbps 4.295Mpps
 //
 //---------------------------------------------------------------------------------------------
 
