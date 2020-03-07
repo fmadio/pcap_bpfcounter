@@ -262,6 +262,14 @@ static inline u32 Length2RMON1(const u32 Length)
 }
 
 //-------------------------------------------------------------------------------------------------
+// manually set device name 
+void Global_SetDeviceName(u8* DeviceName)
+{
+	strncpy(g_DeviceName, DeviceName, sizeof(g_DeviceName));
+	fprintf(stderr, "Set DeviceName [%s]\n", g_DeviceName);
+}
+
+//-------------------------------------------------------------------------------------------------
 // create a new pipeline 
 struct Pipeline_t*  Pipe_Create(u8* Name)
 {
@@ -619,6 +627,7 @@ void Pipeline_WriteLog(Pipeline_t* Pipe, u64 OutputTS)
 	// JSON line
 	JSON += sprintf(JSON, "{");
 	JSON += sprintf(JSON, "\"Name\":\"%s\",", 		Pipe->Name);					// name of the pipeline from config 
+	JSON += sprintf(JSON, "\"Device\":\"%s\",", 	g_DeviceName);					// device name 
 	JSON += sprintf(JSON, "\"timestamp\":%lli,", 	OutputTS / 1000000ULL);			// timestamp must be in msec
 	JSON += sprintf(JSON, "\"TotalPkt\":%lli,", 	Pipe->Stats.TotalPkt); 
 	JSON += sprintf(JSON, "\"TotalByte\":%lli,", 	Pipe->Stats.TotalByte); 

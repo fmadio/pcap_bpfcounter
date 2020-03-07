@@ -2,23 +2,24 @@ local ffi = require("ffi")
 
 ffi.cdef[[
 
-
 	struct Output_t;
-	struct Output_t* Output_Create(	bool IsNULL, 
-									bool IsSTDOUT, 
-									bool IsESOut, 	
-									bool IsCompress, 
-									bool IsESNULL, 
-									u32 Output_BufferCnt, 
-									u32 Output_KeepAlive, 
-									double Output_KeepAliveTimeout, 
-									u32 Output_FilterPath, 
-									u8* QueuePath, 
-									u32 ThreadCnt,
-									u32 CPUCnt,
-									u32* CPUMap);
+	struct Output_t* 		Output_Create(	bool IsNULL, 
+											bool IsSTDOUT, 
+											bool IsESOut, 	
+											bool IsCompress, 
+											bool IsESNULL, 
+											u32 Output_BufferCnt, 
+											u32 Output_KeepAlive, 
+											double Output_KeepAliveTimeout, 
+											u32 Output_FilterPath, 
+											u8* QueuePath, 
+											u32 ThreadCnt,
+											u32 CPUCnt,
+											u32* CPUMap);
 
-	void Output_ESHostAdd(struct Output_t* Out, u8* HostName, u32 HostPort);
+	void 					Output_ESHostAdd			(struct Output_t* Out, u8* HostName, u32 HostPort);
+
+	void 					Global_SetDeviceName		(u8* DeviceName);
 
 	// pipeline status
 	struct Pipeline_t;
@@ -124,6 +125,7 @@ for i,j in ipairs(ARGV) do
 		end	
 		Output_CPUMapList = CPUList
 	end
+
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------
@@ -214,6 +216,13 @@ end
 -----------------------------------------------------------------------------------------------------------------------------------
 -- dummy handlers for analytics configuration settings
 Global_FollowNow 	= function(Name) end
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-- explicitly set device name 
+Global_DeviceName 	= function(Name) 
+	ffi.C.Global_SetDeviceName( ffi.cast("u8*", Name))
+end
 
 -----------------------------------------------------------------------------------------------------------------------------------
 -- disable fast path 
