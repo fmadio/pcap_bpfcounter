@@ -347,7 +347,7 @@ int Pipe_SetFastFilterMACSrc(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2,
 	Pipe->FilterMACSrc[2] = MAC2;
 	Pipe->FilterMACSrc[3] = MAC3;
 	Pipe->FilterMACSrc[4] = MAC4;
-	Pipe->FilterMACSrc[5] = MAC0;
+	Pipe->FilterMACSrc[5] = MAC5;
 
 	fprintf(stderr, "[%-40s] MACSrcFilter %02x:%02x:%02x:%02x:%02x:%02x\n", Pipe->Name, MAC0, MAC1, MAC2, MAC3, MAC4, MAC5);
 
@@ -365,7 +365,7 @@ int Pipe_SetFastFilterMACDst(struct Pipeline_t* Pipe, u8 MAC0, u8 MAC1, u8 MAC2,
 	Pipe->FilterMACDst[2] = MAC2;
 	Pipe->FilterMACDst[3] = MAC3;
 	Pipe->FilterMACDst[4] = MAC4;
-	Pipe->FilterMACDst[5] = MAC0;
+	Pipe->FilterMACDst[5] = MAC5;
 
 	fprintf(stderr, "[%-40s] MACDstFilter %02x:%02x:%02x:%02x:%02x:%02x\n", Pipe->Name, MAC0, MAC1, MAC2, MAC3, MAC4, MAC5);
 
@@ -924,7 +924,6 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 
 			// run BPF expression
 			int Result = 0; 
-
 			if (Pipe->BPFValid)
 			{
 				Result =  pcap_offline_filter((struct bpf_program*)Pipe->BPFCode, &hdr, (const u8*)PacketPayload);
@@ -933,6 +932,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			// hardcoded mac src filter
 			if (Pipe->FilterMACSrcEnb)
 			{
+
 				fEther_t* Ether = (fEther_t*)(Pkt + 1);
 				if ((Ether->Src[0] == Pipe->FilterMACSrc[0]) &&
 					(Ether->Src[1] == Pipe->FilterMACSrc[1]) &&
@@ -946,7 +946,7 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 			}
 
 			// hardcoded mac dst filter
-			if (Pipe->FilterMACSrcEnb)
+			if (Pipe->FilterMACDstEnb)
 			{
 				fEther_t* Ether = (fEther_t*)(Pkt + 1);
 				if ((Ether->Dst[0] == Pipe->FilterMACDst[0]) &&
