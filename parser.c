@@ -936,10 +936,10 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				fEther_t* Ether = (fEther_t*)(Pkt + 1);
 				if ((Ether->Src[0] == Pipe->FilterMACSrc[0]) &&
 					(Ether->Src[1] == Pipe->FilterMACSrc[1]) &&
-					(Ether->Src[1] == Pipe->FilterMACSrc[2]) &&
-					(Ether->Src[1] == Pipe->FilterMACSrc[3]) &&
-					(Ether->Src[1] == Pipe->FilterMACSrc[4]) &&
-					(Ether->Src[1] == Pipe->FilterMACSrc[5]))
+					(Ether->Src[2] == Pipe->FilterMACSrc[2]) &&
+					(Ether->Src[3] == Pipe->FilterMACSrc[3]) &&
+					(Ether->Src[4] == Pipe->FilterMACSrc[4]) &&
+					(Ether->Src[5] == Pipe->FilterMACSrc[5]))
 				{
 					Result = 1;
 				}
@@ -951,10 +951,10 @@ static void PktBlock_Process(u32 CPUID, PacketBlock_t* PktBlock)
 				fEther_t* Ether = (fEther_t*)(Pkt + 1);
 				if ((Ether->Dst[0] == Pipe->FilterMACDst[0]) &&
 					(Ether->Dst[1] == Pipe->FilterMACDst[1]) &&
-					(Ether->Dst[1] == Pipe->FilterMACDst[2]) &&
-					(Ether->Dst[1] == Pipe->FilterMACDst[3]) &&
-					(Ether->Dst[1] == Pipe->FilterMACDst[4]) &&
-					(Ether->Dst[1] == Pipe->FilterMACDst[5]))
+					(Ether->Dst[2] == Pipe->FilterMACDst[2]) &&
+					(Ether->Dst[3] == Pipe->FilterMACDst[3]) &&
+					(Ether->Dst[4] == Pipe->FilterMACDst[4]) &&
+					(Ether->Dst[5] == Pipe->FilterMACDst[5]))
 				{
 					Result = 1;
 				}
