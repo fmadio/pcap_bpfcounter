@@ -1,0 +1,152 @@
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-tcp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015593000,
+  "TotalPkt": 1591878,
+  "TotalByte": 1271239843,
+  "TotalBits": 10169918744,
+  "BytePct": 0.1412,
+  "BpsMax": 130380400000,
+  "BpsMean": 10169918744,
+  "PpsMax": 15350000,
+  "PpsMean": 1591878
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-udp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015593000,
+  "TotalPkt": 5337092,
+  "TotalByte": 6993943460,
+  "TotalBits": 55951547680,
+  "BytePct": 0.776836,
+  "BpsMax": 225885280000,
+  "BpsMean": 55951547680,
+  "PpsMax": 21980000,
+  "PpsMean": 5337092
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-udp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015594000,
+  "TotalPkt": 19076236,
+  "TotalByte": 24873823417,
+  "TotalBits": 198990587336,
+  "BytePct": 0.778961,
+  "BpsMax": 241945600000,
+  "BpsMean": 198990587336,
+  "PpsMax": 23360000,
+  "PpsMean": 19076236
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-tcp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015594000,
+  "TotalPkt": 5724564,
+  "TotalByte": 4460275511,
+  "TotalBits": 35682204088,
+  "BytePct": 0.13968,
+  "BpsMax": 188490640000,
+  "BpsMean": 35682204088,
+  "PpsMax": 19760000,
+  "PpsMean": 5724564
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-udp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015595000,
+  "TotalPkt": 19201622,
+  "TotalByte": 24987664214,
+  "TotalBits": 199901313712,
+  "BytePct": 0.782345,
+  "BpsMax": 249796720000,
+  "BpsMean": 199901313712,
+  "PpsMax": 24570000,
+  "PpsMean": 19201622
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-tcp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015595000,
+  "TotalPkt": 5549536,
+  "TotalByte": 4334300470,
+  "TotalBits": 34674403760,
+  "BytePct": 0.135704,
+  "BpsMax": 184673840000,
+  "BpsMean": 34674403760,
+  "PpsMax": 18540000,
+  "PpsMean": 5549536
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-tcp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015596000,
+  "TotalPkt": 4453774,
+  "TotalByte": 3464044308,
+  "TotalBits": 27712354464,
+  "BytePct": 0.134594,
+  "BpsMax": 170443840000,
+  "BpsMean": 27712354464,
+  "PpsMax": 20180000,
+  "PpsMean": 4453774
+}
+{
+  "index": {
+    "_index": "bpfcounter_test",
+    "_score": null
+  }
+}
+{
+  "Name": "everything-udp",
+  "Device": "fmadio100v2-228U",
+  "timestamp": 1497015596000,
+  "TotalPkt": 15393831,
+  "TotalByte": 20095287006,
+  "TotalBits": 160762296048,
+  "BytePct": 0.780797,
+  "BpsMax": 229606800000,
+  "BpsMean": 160762296048,
+  "PpsMax": 22910000,
+  "PpsMean": 15393831
+}
